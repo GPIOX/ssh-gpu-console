@@ -1,0 +1,503 @@
+/* Workspace feature (Phase 1): tabs strip, project rows, distribution
+   matrix, placements, dialogs, server-roots editors. Tokens only — no
+   theme-specific colors, no shadows beyond dialogs/menus. */
+
+.ws-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.ws-tabs {
+  align-self: stretch;
+  border-bottom: 1px solid var(--line);
+}
+
+/* -- shared row/panel vocabulary ------------------------------------------- */
+
+.ws-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ws-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.ws-row__main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ws-row__name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-row__desc {
+  font-size: 12.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-row__facts {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.ws-row__tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  flex-wrap: wrap;
+  max-width: 40%;
+}
+
+.ws-menu-hold {
+  flex: none;
+  display: inline-flex;
+}
+
+.ws-hint {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ws-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px;
+}
+
+.ws-skeleton__row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* -- tab headers (list/detail sections) ------------------------------------ */
+
+.ws-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ws-tab__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ws-tab__title {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.ws-tab__spacer {
+  flex: 1;
+}
+
+/* -- project detail --------------------------------------------------------- */
+
+.ws-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ws-detail__back {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+}
+
+.ws-detail__back-label {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ws-detail__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 14px 16px;
+}
+
+.ws-detail__identity {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ws-detail__name {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+
+.ws-detail__desc {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.ws-detail__facts {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.ws-detail__actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.ws-actions-inline {
+  display: flex;
+  justify-content: flex-end;
+  padding-bottom: 8px;
+}
+
+/* -- distribution matrix ----------------------------------------------------- */
+
+.ws-matrix-scroll {
+  overflow-x: auto;
+}
+
+.ws-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.ws-matrix th {
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.ws-matrix td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.ws-matrix tr:last-child td {
+  border-bottom: none;
+}
+
+.ws-matrix__artifact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ws-matrix__present {
+  color: var(--healthy);
+  font-weight: 600;
+}
+
+.ws-matrix__missing {
+  color: var(--text-4);
+}
+
+/* -- placements --------------------------------------------------------------- */
+
+.ws-placement-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ws-placement-group__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+
+.ws-placement-group__name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.ws-placement {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  margin-bottom: 6px;
+}
+
+.ws-placement__main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ws-placement__server {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  flex: none;
+}
+
+.ws-placement__unknown {
+  text-transform: none;
+}
+
+.ws-placement__path {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-placement__side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.ws-inspection {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ws-inspection__fact {
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.ws-inspection__ago {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* -- dialogs ---------------------------------------------------------------- */
+
+.ws-dialog__form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ws-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.ws-dialog__pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.ws-dialog__pair--uneven {
+  grid-template-columns: 1fr 1.4fr;
+}
+
+textarea.ws-textarea {
+  min-height: 56px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.45;
+}
+
+.ws-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 6px;
+  background: var(--surface-2);
+}
+
+.ws-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  font-size: 12.5px;
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.ws-check:hover {
+  background: var(--surface-3);
+}
+
+.ws-check input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.ws-check__name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  transition: background-color 120ms ease;
+}
+
+.ws-switch--on {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.ws-switch__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-3);
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+
+.ws-switch--on .ws-switch__thumb {
+  transform: translateX(14px);
+  background: var(--accent);
+}
+
+.ws-envrows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ws-envrow {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.ws-confirm__text {
+  font-size: 13px;
+  color: var(--text-1);
+  line-height: 1.5;
+}
+
+/* -- server roots ------------------------------------------------------------ */
+
+.ws-roots {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ws-roots__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.ws-roots__title {
+  color: var(--text-2);
+}
+
+.ws-roots__hint {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.ws-roots__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.ws-roots__server {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ws-roots__server-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.ws-roots__endpoint {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.ws-roots__spacer {
+  flex: 1;
+}
+
+.ws-roots__saved {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--healthy);
+}
+
+.ws-roots__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+@media (max-width: 720px) {
+  .ws-dialog__pair,
+  .ws-dialog__pair--uneven,
+  .ws-roots__grid {
+    grid-template-columns: 1fr;
+  }
+}

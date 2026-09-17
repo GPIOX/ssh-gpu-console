@@ -1,0 +1,303 @@
+/* Fleet page: aggregate header strip + vertical stack of machine panels. */
+
+.fleet-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: var(--content-max-width);
+}
+
+/* -- aggregate header strip (one line, quiet) -------------------------------- */
+
+.fleet-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 28px;
+}
+
+
+.fleet-head__aggregate {
+  font-size: 13px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+html[data-theme="warm"] .fleet-head__aggregate {
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  font-size: 15.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--text-1);
+}
+
+.fleet-head__spacer {
+  flex: 1;
+}
+
+.fleet-sort {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.fleet-sort > .micro-label {
+  margin-right: 4px;
+}
+
+.fleet-sort__btn {
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.fleet-sort__btn:hover {
+  color: var(--text-1);
+  background: var(--surface-2);
+}
+
+.fleet-sort__btn--active {
+  color: var(--text-1);
+  background: var(--surface-2);
+}
+
+.fleet-sort__dir {
+  margin-left: 4px;
+  font-family: var(--font-mono);
+  color: var(--text-3);
+}
+
+/* -- machine panel stack ------------------------------------------------------ */
+
+.fleet-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fleet-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--card-gap);
+}
+
+.fleet-panel__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.fleet-panel__id {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.fleet-panel__id--row {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.fleet-panel__name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fleet-panel__name {
+  font-size: var(--server-title-size);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fleet-panel__endpoint {
+  font-size: var(--metadata-size);
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fleet-panel__meta {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+
+.fleet-panel__platform {
+  font-size: var(--metadata-size);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+html[data-theme="warm"] .fleet-panel__platform {
+  color: var(--text-1);
+  font-weight: 500;
+}
+
+.fleet-panel__fresh {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.fleet-panel__menu {
+  flex: none;
+  display: flex;
+}
+
+.fleet-panel__notice {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* -- pressure band ------------------------------------------------------------ */
+
+.fleet-panel__pressure {
+  display: flex;
+  align-items: center;
+  gap: var(--metric-group-gap, 28px);
+  flex-wrap: wrap;
+}
+
+.fleet-pressure__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* -- GPU zone ------------------------------------------------------------------ */
+
+.fleet-panel__gpus {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.fleet-panel__more {
+  font-size: 11px;
+  color: var(--text-3);
+  padding-left: 56px; /* aligns with the lane grid's content column */
+}
+
+.fleet-panel__nogpu {
+  font-size: 11.5px;
+  color: var(--text-4);
+}
+
+.fleet-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 22px;
+  min-width: 0;
+}
+
+.fleet-summary__counts {
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+/* -- offline / stale: telemetry recedes, identity stays strong ------------------ */
+
+.fleet-panel--dim .meter__seg--filled {
+  background: var(--text-4);
+  opacity: 0.55;
+}
+
+.fleet-panel--dim .meter__value {
+  color: var(--text-4);
+}
+
+.fleet-panel--dim .gpu-lane__avail,
+.fleet-panel--dim .gpu-lane__thermal,
+.fleet-panel--dim .gpu-lane__owners {
+  color: var(--text-4);
+}
+
+.fleet-panel--dim .fleet-panel__platform {
+  color: var(--text-3);
+}
+
+/* -- disabled servers: one quiet identity line ----------------------------------- */
+
+.fleet-panel--disabled .fleet-panel__name {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+/* -- loading skeleton (shape-matched, static) ------------------------------------ */
+
+.fleet-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fleet-skeleton__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.fleet-skeleton__spacer {
+  flex: 1;
+}
+
+/* -- destructive confirmation ----------------------------------------------------- */
+
+.fleet-dialog__text {
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.6;
+}
+
+.fleet-dialog__text .mono {
+  color: var(--text-1);
+}
+
+.fleet-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* -- narrow layout ----------------------------------------------------------------- */
+
+@media (max-width: 960px) {
+  .fleet-head {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .fleet-panel__platform {
+    display: none;
+  }
+
+  .fleet-head__aggregate {
+    white-space: normal;
+  }
+}

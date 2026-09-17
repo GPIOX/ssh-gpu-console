@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>SSH GPU Console</title>
+    <style>
+      /* Pre-CSS paint: avoid a flash in the wrong theme before CSS loads. */
+      html {
+        background: #0d0d10;
+      }
+      html[data-theme="minimal"] {
+        background: #f3f2ef;
+      }
+      html[data-theme="warm"] {
+        background: #F6F5F1;
+      }
+    </style>
+    <script>
+      // Settled before first paint; UI preference only, never telemetry.
+      try {
+        var pref = localStorage.getItem("sgc.theme") || "dark";
+        if (pref === "light") pref = "minimal";
+        var light = pref === "minimal" || pref === "warm"
+          ? pref
+          : (pref === "system" && !matchMedia("(prefers-color-scheme: dark)").matches ? "minimal" : "dark");
+        document.documentElement.setAttribute("data-theme", light);
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

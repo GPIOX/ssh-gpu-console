@@ -1,0 +1,437 @@
+/* Settings page: quiet registry table + honest preferences. A utility page —
+   understated by design (Fleet is the star); no decorative treatment. */
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 1100px;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 28px;
+}
+
+.settings-head__title {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+
+.settings-head__spacer {
+  flex: 1;
+}
+
+/* -- registry table ------------------------------------------------------------ */
+
+.settings-reg {
+  padding: 4px 8px;
+}
+
+.settings-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.settings-table th {
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.settings-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.settings-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.settings-table tbody tr:hover td {
+  background: var(--surface-2);
+}
+
+.settings-table__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.settings-table__endpoint {
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.settings-table__taglist {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.settings-table__none {
+  color: var(--text-4);
+}
+
+/* Keep the td a table-cell (a flex td stops stretching to row height and its
+   border paints mid-row); the flex layout lives on the inner line. */
+.settings-table__status {
+  white-space: nowrap;
+}
+
+.settings-table__statusline {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.settings-table__statusword {
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.settings-table__menu {
+  width: 1%;
+  text-align: right;
+}
+
+.settings-table__menu .menu__pop {
+  z-index: 60; /* clears the dialog overlay stacking context */
+}
+
+/* -- loading skeleton (shape-matched rows, static) ------------------------------- */
+
+.settings-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 6px 2px;
+}
+
+.settings-skeleton__row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+/* -- add/edit dialog ------------------------------------------------------------- */
+
+.settings-dialog__form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-dialog__pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.settings-dialog__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.settings-dialog__spacer {
+  flex: 1;
+}
+
+.settings-dialog__noalias {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 7px;
+  padding: 10px 12px;
+}
+
+.settings-dialog__noalias p {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.settings-dialog__text {
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.6;
+}
+
+.settings-dialog__text .mono {
+  color: var(--text-1);
+}
+
+/* -- segmented SSH-source control -------------------------------------------------- */
+
+.settings-seg {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  padding: 2px;
+  align-self: flex-start;
+}
+
+.settings-seg__btn {
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.settings-seg__btn:hover {
+  color: var(--text-1);
+}
+
+.settings-seg__btn--active {
+  color: var(--text-1);
+  background: var(--surface-3);
+}
+
+/* -- enabled switch ------------------------------------------------------------------ */
+
+.settings-switch {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.settings-switch__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--text-3);
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+
+.settings-switch--on {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.settings-switch--on .settings-switch__thumb {
+  transform: translateX(16px);
+  background: var(--accent-strong);
+}
+
+/* -- inline test result ---------------------------------------------------------------- */
+
+.settings-test__pending {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.settings-test__block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-test__line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-test__latency {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.settings-test__detail {
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+.settings-test__help {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.55;
+}
+
+/* -- host-key TOFU security panel (amber = verify before proceeding) ------------------- */
+
+.settings-hostkey {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning) 6%, transparent);
+  padding: 12px;
+}
+
+.settings-hostkey__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  line-height: 1.5;
+}
+
+.settings-hostkey__title .mono {
+  font-size: 12px;
+}
+
+.settings-hostkey__facts {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-hostkey__facts .mono {
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+.settings-hostkey__fp {
+  display: block;
+  padding: 7px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-1);
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+.settings-hostkey__advice {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.55;
+}
+
+.settings-hostkey__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+/* -- preferences ------------------------------------------------------------------------ */
+
+.settings-prefs {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.settings-prefs__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 20px;
+}
+
+.settings-prefs__row > .micro-label {
+  width: 116px;
+  flex: none;
+}
+
+.settings-prefs__row > .mono {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.settings-prefs__health {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-prefs__fact {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.settings-prefs__muted {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.settings-prefs__note {
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.6;
+  max-width: 660px;
+}
+
+/* -- narrow layout ------------------------------------------------------------------------ */
+
+@media (max-width: 960px) {
+  .settings-dialog__pair {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-table__tags,
+  .settings-table th:nth-child(3) {
+    display: none;
+  }
+}
+
+/* -- appearance switch ------------------------------------------------------ */
+
+.theme-switch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg-base);
+}
+
+.theme-switch__opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background .15s ease, color .15s ease;
+}
+
+.theme-switch__opt:hover {
+  color: var(--text-1);
+}
+
+.theme-switch__opt--active {
+  background: var(--accent-dim);
+  color: var(--text-1);
+}

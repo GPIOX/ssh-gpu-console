@@ -1,0 +1,250 @@
+/* App frame: fixed rail + fixed header + scrolling dense canvas. */
+
+.app-frame {
+  display: flex;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-content {
+  max-width: var(--content-max-width);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--page-padding-y) var(--page-padding-x);
+}
+
+/* -- left rail (216px, collapses to icon rail < 960px) --------------------- */
+
+.rail {
+  flex: none;
+  width: 216px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raised);
+  border-right: 1px solid var(--line);
+  padding: 14px 10px 12px;
+  overflow-y: auto;
+}
+
+.rail__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 8px 14px;
+}
+
+/* brand mark: small rotated square with an inner rack light */
+.rail__mark {
+  position: relative;
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--surface-3);
+  transform: rotate(45deg);
+}
+
+.rail__mark::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.rail__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-height: 0;
+}
+
+.rail__group-label {
+  padding: 12px 8px 4px;
+}
+
+.rail__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.rail__item:hover {
+  background: var(--surface-2);
+  color: var(--text-1);
+}
+
+.rail__item--active {
+  background: var(--accent-dim);
+  color: var(--text-1);
+}
+
+.rail__item--disabled .rail__item-text {
+  color: var(--text-4);
+}
+
+.rail__item-text {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail__dot {
+  margin-left: 2px;
+}
+
+.rail__empty {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-4);
+}
+
+.rail__bottom {
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* -- context header (56px) -------------------------------------------------- */
+
+.ctx {
+  flex: none;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line);
+}
+
+.ctx__title {
+  font-size: var(--page-title-size);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+}
+
+.ctx__name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.ctx__aggregate {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ctx__freshness {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.ctx__status {
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.ctx__spacer {
+  flex: 1;
+}
+
+/* -- server detail tabs ------------------------------------------------------ */
+
+.tabs {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  gap: 2px;
+}
+
+.tabs__tab {
+  padding: 0 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  border-bottom: 2px solid transparent;
+  border-top: 2px solid transparent;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.tabs__tab:hover {
+  color: var(--text-1);
+}
+
+.tabs__tab--active {
+  color: var(--text-1);
+  border-bottom-color: var(--accent);
+}
+
+/* -- narrow layout ------------------------------------------------------------ */
+
+@media (max-width: 960px) {
+  .rail {
+    width: 56px;
+    padding: 14px 8px 12px;
+  }
+
+  .rail__brand-name,
+  .rail__item-text,
+  .rail__group-label,
+  .rail__empty {
+    display: none;
+  }
+
+  .rail__item {
+    justify-content: center;
+    padding: 8px 0;
+  }
+
+  .rail__dot {
+    margin-left: 0;
+  }
+
+  .ctx {
+    padding: 0 12px;
+  }
+
+  .ctx__freshness {
+    display: none;
+  }
+
+  .app-content {
+    padding: 16px;
+  }
+}
+
+/* Warm: sidebar typography scales up to harmonize with the content column. */
+html[data-theme="warm"] .rail__item {
+  font-size: 14.5px;
+  padding: 7px 10px;
+  font-weight: 500;
+}
+
+html[data-theme="warm"] .rail__item--active {
+  font-weight: 600;
+}
+
+html[data-theme="warm"] .rail__group-label {
+  font-size: 12px;
+}

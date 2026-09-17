@@ -1,0 +1,25 @@
+.section {
+  min-width: 0;
+}
+
+.section__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.section__title {
+  margin: 0;
+}
+
+.section__meta {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.section__body {
+  min-width: 0;
+}

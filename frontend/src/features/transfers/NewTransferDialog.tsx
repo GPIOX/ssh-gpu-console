@@ -1,0 +1,362 @@
+/**
+ * New transfer dialog. Artifact → source placement (filtered to the artifact)
+ * → target server → target path (auto-suggested from the server's kind root
+ * + name:version until the user edits it) → method (自动/直接同步/本机中转,
+ * default 自动). Every field change debounce-posts /transfers/plan and shows
+ * per-method availability + reason — planning is an explicit SSH preflight,
+ * so it only runs on deliberate, complete input.
+ */
+
+import { useEffect, useRef, useState } from "react";
+import { Button, Chip, Dialog, Field, Select, TextInput } from "../../design";
+import { useT } from "../../i18n";
+import { useConsoleStore } from "../../store/consoleStore";
+import { useTransferStore } from "../../store/transferStore";
+import { useWorkspaceStore } from "../../store/workspaceStore";
+import { transfersApi } from "../../services/transfersApi";
+import type {
+  TransferPlan,
+  TransferRequest,
+  TransferStrategy,
+  VerifyMode,
+} from "../../types/transfers";
+import type { ServerRecord } from "../../types/models";
+import type { ArtifactRecord } from "../../types/workspace";
+import { artifactLabel } from "../workspace/shared";
+import { cx } from "../../utils/cx";
+import "./transfers.css";
+
+const STRATEGY_OPTIONS: TransferStrategy[] = ["auto", "direct_rsync", "local_relay"];
+const PLAN_DEBOUNCE_MS = 400;
+
+/** ServerRoots kind → root field used for the target path suggestion. */
+function kindRootField(
+  kind: ArtifactRecord["kind"],
+): "project_root" | "dataset_root" | "model_root" {
+  if (kind === "dataset") return "dataset_root";
+  if (kind === "model") return "model_root";
+  return "project_root";
+}
+
+function strategyLabel(t: ReturnType<typeof useT>, strategy: TransferStrategy): string {
+  if (strategy === "direct_rsync") return t.transfers.strategyDirect;
+  if (strategy === "local_relay") return t.transfers.strategyRelay;
+  return t.transfers.strategyAuto;
+}
+
+function firstTargetServer(servers: ServerRecord[], exclude: string | undefined): string {
+  const enabled = servers.filter((s) => s.enabled && s.server_id !== exclude);
+  return enabled[0]?.server_id ?? "";
+}
+
+function placementSourceLabel(
+  servers: ServerRecord[],
+  serverId: string,
+  remotePath: string,
+): string {
+  const name = servers.find((s) => s.server_id === serverId)?.display_name ?? serverId;
+  return `${name} · ${remotePath}`;
+}
+
+function buildRequest(
+  artifactId: string,
+  placementId: string,
+  targetServerId: string,
+  targetPath: string,
+  strategy: TransferStrategy,
+): TransferRequest | null {
+  const path = targetPath.trim();
+  if (
+    artifactId === "" ||
+    placementId === "" ||
+    targetServerId === "" ||
+    path === "" ||
+    path.length > 512
+  ) {
+    return null;
+  }
+  return {
+    artifact_id: artifactId,
+    source_placement_id: placementId,
+    target_server_id: targetServerId,
+    target_path: path,
+    strategy,
+    verify_mode: "quick" as VerifyMode,
+  };
+}
+
+export interface NewTransferDialogProps {
+  open: boolean;
+}
+
+export function NewTransferDialog({ open }: NewTransferDialogProps) {
+  const t = useT();
+  const prefill = useTransferStore((state) => state.dialog.prefill);
+  const closeDialog = useTransferStore((state) => state.closeNewTransfer);
+  const createTransfer = useTransferStore((state) => state.createTransfer);
+
+  const artifacts = useWorkspaceStore((state) => state.artifacts);
+  const placements = useWorkspaceStore((state) => state.placements);
+  const serverRoots = useWorkspaceStore((state) => state.serverRoots);
+  const loadServerRoots = useWorkspaceStore((state) => state.loadServerRoots);
+  const servers = useConsoleStore((state) => state.servers);
+
+  const [artifactId, setArtifactId] = useState("");
+  const [placementId, setPlacementId] = useState("");
+  const [targetServerId, setTargetServerId] = useState("");
+  const [targetPath, setTargetPath] = useState("");
+  const [strategy, setStrategy] = useState<TransferStrategy>("auto");
+  const [pathTouched, setPathTouched] = useState(false);
+  const [plan, setPlan] = useState<TransferPlan | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const planSeq = useRef(0);
+
+  const artifactPlacements = placements.filter((p) => p.artifact_id === artifactId);
+  const selectedPlacement = artifactPlacements.find((p) => p.placement_id === placementId);
+  const sourceServerId = selectedPlacement?.server_id;
+
+  // Seed the form on open, from the 同步到… prefill when present. Seeding keys
+  // off the open transition only — later store loads never clobber edits.
+  const seededOpen = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      seededOpen.current = false;
+      return;
+    }
+    if (seededOpen.current) return;
+    seededOpen.current = true;
+    const artifact =
+      (prefill.artifactId !== undefined
+        ? artifacts.find((a) => a.artifact_id === prefill.artifactId)
+        : undefined) ?? artifacts[0];
+    const nextArtifactId = artifact?.artifact_id ?? "";
+    const pool = placements.filter((p) => p.artifact_id === nextArtifactId);
+    const placement =
+      (prefill.sourcePlacementId !== undefined
+        ? pool.find((p) => p.placement_id === prefill.sourcePlacementId)
+        : undefined) ?? pool[0];
+    setArtifactId(nextArtifactId);
+    setPlacementId(placement?.placement_id ?? "");
+    setTargetServerId(firstTargetServer(servers, placement?.server_id));
+    setTargetPath("");
+    setPathTouched(false);
+    setStrategy("auto");
+    setPlan(null);
+    setPlanError(null);
+    setCreateError(null);
+  }, [open, prefill, artifacts, placements, servers]);
+
+  // Target path suggestion from the target server's kind root + name:version,
+  // only while the user has not typed their own path. Fetches roots on demand.
+  useEffect(() => {
+    if (!open || pathTouched) return;
+    if (targetServerId === "" || targetServerId === sourceServerId) return;
+    if (serverRoots[targetServerId] === undefined) {
+      void loadServerRoots(targetServerId);
+      return;
+    }
+    const artifact = artifacts.find((a) => a.artifact_id === artifactId);
+    const root = serverRoots[targetServerId]?.[kindRootField(artifact?.kind ?? "dataset")];
+    if (artifact === undefined || root === null || root === "") return;
+    setTargetPath(`${root}/${artifactLabel(artifact)}`);
+  }, [
+    open,
+    pathTouched,
+    artifactId,
+    targetServerId,
+    sourceServerId,
+    serverRoots,
+    artifacts,
+    loadServerRoots,
+  ]);
+
+  const request = buildRequest(artifactId, placementId, targetServerId, targetPath, strategy);
+
+  // Debounced plan: complete form state re-runs the availability check after
+  // 400 ms; out-of-order responses are dropped by sequence number.
+  useEffect(() => {
+    if (!open || request === null) {
+      setPlan(null);
+      return;
+    }
+    const seq = ++planSeq.current;
+    setPlanning(true);
+    setPlanError(null);
+    const handle = setTimeout(() => {
+      transfersApi
+        .plan(request)
+        .then((result) => {
+          if (seq === planSeq.current) setPlan(result);
+        })
+        .catch((cause: unknown) => {
+          if (seq === planSeq.current) {
+            setPlan(null);
+            setPlanError(cause instanceof Error ? cause.message : "request failed");
+          }
+        })
+        .finally(() => {
+          if (seq === planSeq.current) setPlanning(false);
+        });
+    }, PLAN_DEBOUNCE_MS);
+    return () => clearTimeout(handle);
+    // request is derived from exactly these fields.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, artifactId, placementId, targetServerId, targetPath, strategy]);
+
+  const submit = async (): Promise<void> => {
+    if (request === null) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await createTransfer(request);
+      closeDialog();
+    } catch (cause) {
+      setCreateError(cause instanceof Error ? cause.message : "request failed");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const directAvailable = plan?.strategy_available["direct_rsync"] === true;
+  const relayAvailable = plan?.strategy_available["local_relay"] === true;
+
+  return (
+    <Dialog open={open} onClose={closeDialog} title={t.transfers.dialogTitle} width={480}>
+      <form
+        className="tf-dialog__form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (request !== null && !creating) void submit();
+        }}
+      >
+        <Field label={t.transfers.artifact} htmlFor="tf-artifact">
+          <Select
+            id="tf-artifact"
+            value={artifactId}
+            onChange={(event) => {
+              const next = event.target.value;
+              setArtifactId(next);
+              const pool = placements.filter((p) => p.artifact_id === next);
+              setPlacementId(pool[0]?.placement_id ?? "");
+            }}
+          >
+            {artifacts.length === 0 && <option value="">—</option>}
+            {artifacts.map((artifact) => (
+              <option key={artifact.artifact_id} value={artifact.artifact_id}>
+                {artifactLabel(artifact)}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field
+          label={t.transfers.sourcePlacement}
+          htmlFor="tf-source"
+          hint={artifactPlacements.length === 0 ? t.transfers.noPlacements : undefined}
+        >
+          <Select
+            id="tf-source"
+            value={placementId}
+            onChange={(event) => setPlacementId(event.target.value)}
+          >
+            {artifactPlacements.length === 0 && <option value="">—</option>}
+            {artifactPlacements.map((placement) => (
+              <option key={placement.placement_id} value={placement.placement_id}>
+                {placementSourceLabel(servers, placement.server_id, placement.remote_path)}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field
+          label={t.transfers.targetServer}
+          htmlFor="tf-target-server"
+          hint={servers.length === 0 ? t.transfers.noServers : undefined}
+        >
+          <Select
+            id="tf-target-server"
+            value={targetServerId}
+            onChange={(event) => setTargetServerId(event.target.value)}
+          >
+            {servers.length === 0 && <option value="">—</option>}
+            {servers.map((server) => (
+              <option key={server.server_id} value={server.server_id}>
+                {server.display_name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field label={t.transfers.targetPath} htmlFor="tf-target-path">
+          <TextInput
+            id="tf-target-path"
+            className="mono"
+            spellCheck={false}
+            value={targetPath}
+            onChange={(event) => {
+              setPathTouched(true);
+              setTargetPath(event.target.value);
+            }}
+          />
+        </Field>
+
+        <Field label={t.transfers.method}>
+          <div className="tf-method" role="group" aria-label={t.transfers.method}>
+            {STRATEGY_OPTIONS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                className={cx("tf-method__opt", strategy === option && "tf-method__opt--active")}
+                aria-pressed={strategy === option}
+                onClick={() => setStrategy(option)}
+              >
+                {strategyLabel(t, option)}
+              </button>
+            ))}
+          </div>
+        </Field>
+
+        {(planning || plan !== null || planError !== null) && (
+          <div className="tf-plan">
+            {planning && <p className="tf-plan__busy">{t.transfers.planning}</p>}
+            {plan !== null && (
+              <>
+                <div className="tf-plan__row">
+                  <span>{t.transfers.strategyDirect}</span>
+                  <Chip tone={directAvailable ? "ok" : "crit"}>
+                    {directAvailable ? t.transfers.available : t.transfers.unavailable}
+                  </Chip>
+                </div>
+                {!directAvailable && <p className="tf-plan__reason">{t.transfers.noDirectSsh}</p>}
+                <div className="tf-plan__row">
+                  <span>{t.transfers.strategyRelay}</span>
+                  <Chip tone={relayAvailable ? "ok" : "crit"}>
+                    {relayAvailable ? t.transfers.available : t.transfers.unavailable}
+                  </Chip>
+                </div>
+                {plan.reason !== "" && <p className="tf-plan__reason mono">{plan.reason}</p>}
+              </>
+            )}
+            {!planning && plan === null && planError !== null && (
+              <p className="field__error">{planError}</p>
+            )}
+          </div>
+        )}
+
+        {createError !== null && <p className="field__error">{createError}</p>}
+
+        <div className="ws-dialog__actions">
+          <Button onClick={closeDialog} disabled={creating}>
+            {t.common.cancel}
+          </Button>
+          <Button variant="primary" type="submit" disabled={request === null || creating}>
+            {creating ? t.transfers.creating : t.transfers.create}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}

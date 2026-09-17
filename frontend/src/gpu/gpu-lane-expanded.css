@@ -1,0 +1,92 @@
+.gpu-lane-x {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.gpu-lane-x__head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.gpu-lane-x__name {
+  flex: none;
+  width: 44px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.gpu-lane-x__model {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* hero numeral: 28–34px mono tabular per DESIGN.md */
+.gpu-lane-x__numeral {
+  flex: none;
+  min-width: 88px;
+  text-align: right;
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.gpu-lane-x__spark {
+  flex: none;
+  width: 140px;
+  height: 30px;
+  color: var(--text-2);
+}
+
+.gpu-lane-x__spark--util {
+  color: var(--accent);
+}
+
+/* Telemetry strokes are state-colored, not accent (DESIGN.md). */
+.gpu-lane-x__spark--ok {
+  color: var(--healthy);
+}
+
+.gpu-lane-x__spark--warn {
+  color: var(--warning);
+}
+
+.gpu-lane-x__spark--crit {
+  color: var(--danger);
+}
+
+.gpu-lane-x__spark--vram {
+  color: var(--cold);
+}
+
+.gpu-lane-x__vram-label {
+  flex: none;
+  min-width: 48px;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.gpu-lane-x__lane {
+  min-height: 0;
+}
+
+.gpu-lane-x__procs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 56px;
+}

@@ -1,0 +1,123 @@
+/* Design tokens — copied verbatim from DESIGN.md (binding contract). Do not edit values here. */
+:root {
+  --shadow-card: none;
+  /* layout tokens — Minimal values are the shared defaults */
+  --page-padding-x: 20px;
+  --page-padding-y: 16px;
+  --content-max-width: 1320px;
+  --card-padding-x: 16px;
+  --card-padding-y: 14px;
+  --card-gap: 12px;
+  --card-radius: 10px;
+  --page-title-size: 17px;
+  --server-title-size: 16px;
+  --metadata-size: 11.5px;
+  --metric-row-height: 22px;
+  --metric-label-width: 44px;
+  --metric-bar-width: 150px;
+  --metric-bar-height: 10px;
+  --metric-bar-radius: 2px;
+  --metric-col-gap: 14px;
+  --gpu-lane-cols: 44px minmax(84px, 1.1fr) minmax(150px, 176px) 128px minmax(92px, max-content) minmax(64px, 1fr);
+  --rail-width: 216px;
+  --metric-group-gap: 28px;
+  --overlay-scrim: rgba(6, 6, 8, 0.6);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.5);
+  /* canvas — warm-neutral near-black, layered upward */
+  --bg-base:    #0d0d10;
+  --bg-raised:  #121216;
+  --surface-1:  #17171c;
+  --surface-2:  #1d1d23;
+  --surface-3:  #24242b;
+  /* hairlines */
+  --line:        #26262e;
+  --line-strong: #33333d;
+  /* typography — warm off-white, never pure white */
+  --text-1: #f4f3f1;
+  --text-2: #a9a8b3;
+  --text-3: #6e6d7a;
+  --text-4: #46454f;
+  /* accent — restrained indigo-violet, selection/focus/active nav only */
+  --accent:        #8b8df0;
+  --accent-strong: #a7a9ff;
+  --accent-dim:    rgba(139,141,240,.14);
+  /* semantic state */
+  --healthy: #3ecf8e;
+  --warning: #e5b567;
+  --danger:  #ef6f6c;
+  --cold:    #6db3d9;
+  /* fonts */
+  --font-ui:   "Manrope", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", SFMono-Regular, Menlo, monospace;
+}
+
+/* Minimal — the existing restrained light interface (renamed from "light";
+   legacy localStorage values migrate at load time). */
+html[data-theme="minimal"] {
+  --bg-base:    #f3f2ef;
+  --bg-raised:  #faf9f7;
+  --surface-1:  #ffffff;
+  --surface-2:  #f6f5f2;
+  --surface-3:  #ebeae5;
+  --line:        #e2e1db;
+  --line-strong: #c9c8c1;
+  --text-1: #1c1b20;
+  --text-2: #54535c;
+  --text-3: #8a8894;
+  --text-4: #b9b7c0;
+  --accent:        #5a5dd6;
+  --accent-strong: #4548c2;
+  --accent-dim:    rgba(90,93,214,.11);
+  --healthy: #157f52;
+  --warning: #9a6b14;
+  --danger:  #c4383a;
+  --cold:    #2b6d94;
+  --shadow-card: none;
+  --overlay-scrim: rgba(32, 31, 36, 0.35);
+  --shadow-pop: 0 8px 24px rgba(28, 27, 32, 0.14);
+}
+
+/* Warm — refined card-oriented light variant (DESIGN.md Warm palette). */
+html[data-theme="warm"] {
+  --bg-base:    #F6F5F1;
+  --bg-raised:  #F1F0EA;
+  --surface-1:  #FCFCFA;
+  --surface-2:  #FFFFFF;
+  --surface-3:  #ECECE7;
+  --line:        #E4E2DB;
+  --line-strong: #cfcdb8;
+  --text-1: #20231F;
+  --text-2: #6F756D;
+  --text-3: #A0A49D;
+  --text-4: #c3c6be;
+  --accent:        #52634A;
+  --accent-strong: #43523C;
+  --accent-dim:    rgba(82,99,74,.12);
+  --healthy: #24935A;
+  --warning: #C58A2A;
+  --danger:  #C8574D;
+  --cold:    #4E78B8;
+  --shadow-card: 0 1px 2px rgba(32,35,31,.05);
+  /* layout tokens — Warm's own spatial language */
+  --page-padding-x: 48px;
+  --page-padding-y: 28px;
+  --content-max-width: none;
+  --card-padding-x: 28px;
+  --card-padding-y: 20px;
+  --card-gap: 16px;
+  --card-radius: 12px;
+  --page-title-size: 26px;
+  --server-title-size: 19px;
+  --metadata-size: 12.5px;
+  --metric-row-height: 26px;
+  --metric-label-width: 52px;
+  --metric-bar-width: 210px;
+  --metric-bar-height: 7px;
+  --metric-bar-radius: 999px;
+  --metric-col-gap: 22px;
+  --gpu-lane-cols: 56px calc(var(--metric-bar-width) + 66px) minmax(170px, max-content) max-content max-content minmax(80px, 1fr);
+  --rail-width: 232px;
+  --metric-group-gap: 72px;
+  --overlay-scrim: rgba(32, 35, 31, 0.35);
+  --shadow-pop: 0 8px 24px rgba(32, 35, 31, 0.14);
+}

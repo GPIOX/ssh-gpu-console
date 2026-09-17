@@ -1,0 +1,30 @@
+.error-panel {
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--danger);
+  background: var(--surface-1);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.error-panel__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.error-panel__detail {
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.error-panel__actions {
+  margin-top: 4px;
+  display: flex;
+  gap: 8px;
+}

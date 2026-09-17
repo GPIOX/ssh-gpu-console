@@ -1,0 +1,518 @@
+/* Server detail (F3). Broad stacked sections over the dense canvas; all
+   classes prefixed srv-. Identity stays strong in error/offline states, and
+   telemetry recedes (55%) when stale, per DESIGN.md. */
+
+.srv-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.srv-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.srv-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.srv-body--stale {
+  opacity: 0.55;
+  filter: saturate(0.45);
+  transition: opacity 160ms ease, filter 160ms ease;
+}
+
+.srv-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.srv-muted {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.srv-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* -- identity (error/offline/loading states) -------------------------------- */
+
+.srv-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.srv-identity__name {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.srv-identity__endpoint {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.srv-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+/* -- GPU lanes / expanded surfaces ------------------------------------------ */
+
+.srv-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.srv-gpu-procs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.srv-gpu-proc {
+  display: grid;
+  grid-template-columns: 64px 88px 120px 96px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.srv-gpu-proc--head {
+  padding-bottom: 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.srv-gpu-proc__name {
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.srv-gpu-proc__cmd {
+  color: var(--text-3);
+  white-space: normal;
+  word-break: break-all; /* full command: wrap instead of truncating with space free */
+}
+
+/* -- overview: CPU/RAM pressure band ---------------------------------------- */
+
+.srv-pressure {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 48px;
+}
+
+.srv-pressure__cell {
+  flex: 1 1 260px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* hero numerals: 28–34px mono tabular per DESIGN.md */
+.srv-pressure__numeral {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.srv-pressure__sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* -- overview: storage warning ----------------------------------------------- */
+
+.srv-diskwarn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.srv-diskwarn__device {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.srv-diskwarn__mount {
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+.srv-diskwarn__meter {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.srv-diskwarn__free {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* -- overview: network + top processes --------------------------------------- */
+
+.srv-netlist {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.srv-netlist__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.srv-netlist__row + .srv-netlist__row {
+  border-top: 1px solid var(--line);
+}
+
+.srv-netlist__name {
+  min-width: 72px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.srv-netlist__ip {
+  min-width: 110px;
+  color: var(--text-3);
+}
+
+.srv-topprocs {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.srv-topprocs__row {
+  display: grid;
+  grid-template-columns: 72px 110px minmax(0, 1fr) 76px;
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 12.5px;
+}
+
+.srv-topprocs__row + .srv-topprocs__row {
+  border-top: 1px solid var(--line);
+}
+
+.srv-topprocs__user {
+  color: var(--text-2);
+}
+
+.srv-topprocs__name {
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* -- processes: controls + table --------------------------------------------- */
+
+.srv-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.srv-controls .text-input {
+  max-width: 300px;
+}
+
+.srv-toggle {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-3);
+  white-space: nowrap;
+  transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease;
+}
+
+.srv-toggle:hover {
+  color: var(--text-1);
+  border-color: var(--line-strong);
+}
+
+.srv-toggle--on {
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--accent-dim);
+}
+
+.srv-table-wrap {
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.srv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.srv-table th {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line-strong);
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.srv-table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.srv-table__sort {
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+}
+
+.srv-table__sort:hover {
+  color: var(--text-1);
+}
+
+.srv-table td.srv-table__cmd {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-3);
+}
+
+.srv-table__menu {
+  width: 36px;
+  text-align: right;
+}
+
+.srv-table td.srv-table__menu {
+  padding-right: 0;
+}
+
+/* -- system definition grid --------------------------------------------------- */
+
+.srv-defs {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.srv-defs__row {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.srv-defs__row:last-child {
+  border-bottom: none;
+}
+
+.srv-defs dd {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+
+/* -- storage ------------------------------------------------------------------ */
+
+.srv-mounts {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Shared tracks keep meter and values aligned across mount rows. */
+
+.srv-mount {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(110px, 1fr) 300px 150px;
+  gap: 6px 14px;
+  align-items: center;
+  padding: 6px 0;
+}
+
+.srv-mount__id {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.srv-mount + .srv-mount {
+  border-top: 1px solid var(--line);
+}
+
+.srv-mount__device {
+  flex: none;
+  min-width: 150px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.srv-mount__path {
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+.srv-mount__meter {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.srv-mount__free {
+  flex: none;
+  min-width: 110px;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* -- network ------------------------------------------------------------------- */
+
+.srv-ifaces {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.srv-iface {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  padding: 6px 0;
+}
+
+.srv-iface + .srv-iface {
+  border-top: 1px solid var(--line);
+}
+
+.srv-iface__name {
+  min-width: 80px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.srv-iface__ip {
+  min-width: 120px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.srv-iface__rate {
+  min-width: 120px;
+  font-size: 12px;
+}
+
+.srv-iface__total {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* -- destructive confirmation --------------------------------------------------- */
+
+.srv-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.srv-confirm__lead {
+  font-size: 13.5px;
+  color: var(--text-1);
+}
+
+.srv-confirm__cmd {
+  font-size: 11.5px;
+  color: var(--text-3);
+  word-break: break-all;
+}
+
+.srv-confirm__hint {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.srv-confirm__error {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.srv-confirm__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* < 960px: telemetry panels stack, pressure cells collapse to one column */
+@media (max-width: 960px) {
+  .srv-pressure__cell {
+    flex-basis: 100%;
+  }
+
+  .srv-gpu-proc {
+    grid-template-columns: 56px 72px 100px 88px minmax(0, 1fr);
+  }
+}

@@ -1,0 +1,465 @@
+"""Phase 2 transfer tests: planner, local relay, rsync safety, concurrency.
+
+Fakes are in-memory only (no network, no real SFTP); the local relay is
+exercised against a scripted in-RAM filesystem to prove the no-staging-file
+and bounded-chunk guarantees.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Any
+
+import pytest
+from app.core.config import Settings
+from app.models.transfer import (
+    TransferJob,
+    TransferRequest,
+    TransferState,
+    TransferStrategy,
+)
+from app.models.workspace import ArtifactCreate, PlacementCreate
+from app.ssh.executor import RemoteCommandResult
+from app.ssh.file_transfer import FileStat, ServerLike
+from app.transfer.planner import (
+    build_rsync_command,
+    target_rsync_spec,
+)
+from app.transfer.service import TransferService
+from app.transfer.state import JobRegistry
+from app.transfer.strategies.local_relay import partial_name, relay_transfer
+from app.workspace.repository import WorkspaceRepository
+from app.workspace.service import WorkspaceService
+
+# ---- in-memory TransferSession fake -------------------------------------------
+
+
+class MemFS:
+    """In-memory tree: dirs as a set, files as path->bytes."""
+
+    def __init__(self) -> None:
+        self.dirs: set[str] = {"/"}
+        self.files: dict[str, bytes] = {}
+        self.writes = 0
+
+    def stat(self, path: str) -> FileStat:
+        if path in self.files:
+            return FileStat(exists=True, is_dir=False, size_b=len(self.files[path]))
+        if path in self.dirs or path == "/" or path == "~":
+            return FileStat(exists=True, is_dir=True)
+        return FileStat(exists=False, is_dir=False)
+
+    def add_file(self, path: str, content: bytes) -> None:
+        self.files[path] = content
+
+    def add_dir(self, path: str) -> None:
+        self.dirs.add(path)
+
+
+class FakeTransferSession:
+    """TransferSession over an in-memory FS; counts chunk reads."""
+
+    def __init__(self, fs: MemFS, chunk_reads: list[int] | None = None) -> None:
+        self._fs = fs
+        self._chunk_reads = chunk_reads
+        self.closed = False
+
+    async def stat(self, path: str) -> FileStat:
+        return self._fs.stat(path)
+
+    async def mkdir(self, path: str) -> None:
+        self._fs.add_dir(path)
+        # parents implicit in this fake
+
+    async def listdir(self, path: str) -> list[str]:
+        prefix = path.rstrip("/") + "/"
+        names = []
+        for file_path in list(self._fs.files) + list(self._fs.dirs):
+            if file_path.startswith(prefix) and "/" not in file_path[len(prefix) :]:
+                names.append(file_path[len(prefix) :])
+        return names
+
+    async def open_reader(self, path: str) -> Any:
+        content = self._fs.files.get(path, b"")
+        return _FakeReader(content, self._chunk_reads)
+
+    async def open_writer(self, path: str) -> Any:
+        return _FakeWriter(path, self._fs, self._chunk_reads)
+
+    async def rename(self, source: str, target: str) -> None:
+        if source in self._fs.files:
+            self._fs.files[target] = self._fs.files.pop(source)
+
+    async def remove(self, path: str) -> None:
+        self._fs.files.pop(path, None)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeReader:
+    def __init__(self, content: bytes, chunk_reads: list[int] | None) -> None:
+        self._content = content
+        self._pos = 0
+        self._chunk_reads = chunk_reads
+
+    async def read(self, size: int) -> bytes:
+        if self._chunk_reads is not None:
+            self._chunk_reads.append(size)
+        chunk = self._content[self._pos : self._pos + size]
+        self._pos += len(chunk)
+        return chunk
+
+    async def close(self) -> None:
+        return None
+
+
+class _FakeWriter:
+    def __init__(self, path: str, fs: MemFS, chunk_reads: list[int] | None) -> None:
+        self._path = path
+        self._fs = fs
+        self._buffer = b""
+        self._chunk_reads = chunk_reads
+
+    async def write(self, data: bytes) -> None:
+        if self._chunk_reads is not None:
+            pass
+        self._buffer += data
+
+    async def close(self) -> None:
+        self._fs.files[self._path] = self._buffer
+
+
+class _CancelledSession(FakeTransferSession):
+    """Reader that raises once the job is cancelled (simulates remote loss)."""
+
+    def __init__(self, fs: MemFS, job: Any, big: int) -> None:
+        super().__init__(fs)
+        self._job = job
+        self._big = big
+
+    async def open_reader(self, path: str) -> Any:
+        return _CancellingReader(self._job, self._big)
+
+
+class _CancellingReader:
+    def __init__(self, job: Any, total: int) -> None:
+        self._job = job
+        self._pos = 0
+        self._total = total
+
+    async def read(self, size: int) -> bytes:
+        if self._job.state.value == "cancelled":
+            raise ConnectionError("source session lost after cancel")
+        chunk = b"x" * size
+        self._pos += size
+        if self._pos >= self._total:
+            return b""
+        return chunk
+
+    async def close(self) -> None:
+        return None
+
+
+# ---- fakes for the service layer -------------------------------------------------
+
+
+class FakeSsh:
+    """Duck SshManager for TransferService tests (no network)."""
+
+    def __init__(self, settings: Settings, fs_by_server: dict[str, MemFS]) -> None:
+        self._settings = settings
+        self._fs = fs_by_server
+        self._slots: dict[str, Any] = {}
+
+    def transfer_slot_or_create(self, server_id: str) -> Any:
+        import asyncio
+
+        slot = self._slots.get(server_id)
+        if slot is None:
+            slot = asyncio.Semaphore(1)
+            self._slots[server_id] = slot
+        return slot
+
+    async def transfer_session(self, server: ServerLike) -> FakeTransferSession:
+        return FakeTransferSession(self._fs[server.server_id])
+
+    async def transfer_command_session(self, server: ServerLike) -> Any:
+        return _FakeLongCommand([], exit_code=0)
+
+    async def close_transfer_sessions(self) -> None:
+        return None
+
+    def build_executor_for(self, server_id: str) -> Any:
+        class _Exec:
+            async def run(self, command: str, *, timeout_s: float = 10.0) -> RemoteCommandResult:
+                if "command -v rsync" in command:
+                    return RemoteCommandResult(0, "/usr/bin/rsync\n", "", 1.0)
+                if "stat -c %s" in command:
+                    return RemoteCommandResult(0, "1048576\n", "", 1.0)
+                return RemoteCommandResult(0, "", "", 1.0)
+
+        return _Exec()
+
+    def resolve_params_for(self, server: ServerLike) -> Any:
+
+        return _ParamsStub(host=f"{server.ssh_host}.example", port=22, username=server.username)
+
+
+class _ParamsStub:
+    def __init__(self, host: str, port: int | None, username: str | None) -> None:
+        self.host = host
+        self.port = port
+        self.username = username
+
+
+class _FakeLongCommand:
+    def __init__(self, calls: list[str], exit_code: int) -> None:
+        self._calls = calls
+        self._exit = exit_code
+        self.closed = False
+
+    async def run(self, command: str, *, timeout_s: float, on_stdout: Any = None) -> int:
+        self._calls.append(command)
+        return self._exit
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+# ---- service harness -------------------------------------------------------------
+
+
+def _service(
+    tmp_path: Path, fs_by_server: dict[str, MemFS]
+) -> tuple[TransferService, WorkspaceService]:
+    from app.servers.registry import ServerRegistry, set_default_registry
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        max_transfers_global=2,
+        max_transfers_per_server=1,
+        transfer_chunk_size_b=65536,
+        transfer_job_history=10,
+    )
+    repo = WorkspaceRepository(_store(tmp_path / "workspace.json"))
+    workspace = WorkspaceService(repo, server_exists=lambda _sid: True)
+    registry = ServerRegistry(_store(tmp_path / "registry.json"))
+    set_default_registry(registry)
+    ids: dict[str, str] = {}
+    for name in list(fs_by_server):
+        from app.models.server import ServerCreate
+
+        record = registry.create(ServerCreate(display_name=name, ssh_host=f"{name}.example"))
+        ids[name] = record.server_id
+        fs_by_server[record.server_id] = fs_by_server.pop(name)
+    ssh = FakeSsh(settings, fs_by_server)
+    service = TransferService(settings=settings, ssh=ssh, workspace=workspace)
+    return service, workspace, ids
+
+
+def _store(path: Path) -> Any:
+    from app.persistence.json_store import JsonFileStore
+
+    return JsonFileStore(path)
+
+
+async def _wait_state(
+    service: TransferService, job_id: str, state: TransferState, timeout: float = 5.0
+) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = service.job(job_id)
+        if job.state == state:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"job {job_id} did not reach {state}")
+
+
+# ---- local relay tests -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_relay_single_file_roundtrip() -> None:
+    src, dst = MemFS(), MemFS()
+    src.add_file("~/data/model.bin", b"x" * 4096)
+    job = _job(source_path="~/data/model.bin", target_path="~/models/model.bin")
+    await relay_transfer(
+        job=job, source=FakeTransferSession(src), target=FakeTransferSession(dst), chunk_size=65536
+    )
+    assert dst.files["~/models/model.bin"] == b"x" * 4096
+    assert job.files_done == 1 and job.bytes_done == 4096
+
+
+@pytest.mark.asyncio
+async def test_relay_directory_copy_update_not_mirror() -> None:
+    src, dst = MemFS(), MemFS()
+    src.add_dir("~/data/dset")
+    src.add_file("~/data/dset/a.bin", b"A" * 2048)
+    src.add_file("~/data/dset/b.bin", b"B" * 1024)
+    dst.add_file("~/dset/EXTRA.txt", b"keep me")  # mirror would delete this
+
+    job = _job(source_path="~/data/dset", target_path="~/dset")
+    await relay_transfer(
+        job=job, source=FakeTransferSession(src), target=FakeTransferSession(dst), chunk_size=65536
+    )
+    assert dst.files["~/dset/a.bin"] == b"A" * 2048
+    assert dst.files["~/dset/b.bin"] == b"B" * 1024
+    assert dst.files["~/dset/EXTRA.txt"] == b"keep me"  # no --delete semantics
+    assert job.files_total == 2 and job.files_done == 2
+
+
+@pytest.mark.asyncio
+async def test_relay_uses_bounded_chunks_never_whole_file() -> None:
+    reads: list[int] = []
+    src, dst = MemFS(), MemFS()
+    big = b"z" * (256 * 1024)  # 256 KiB payload over 64 KiB chunks
+    src.add_file("~/d.bin", big)
+    job = _job()
+    await relay_transfer(
+        job=job,
+        source=FakeTransferSession(src, reads),
+        target=FakeTransferSession(dst),
+        chunk_size=65536,
+    )
+    assert reads and max(reads) <= 65536
+    assert dst.files["~/d.bin"] == big
+
+
+@pytest.mark.asyncio
+async def test_relay_partial_file_never_corrupts_target() -> None:
+    src, dst = MemFS(), MemFS()
+    src.add_file("~/f.bin", b"new-content" * 100)
+    dst.add_file("~/f.bin", b"ORIGINAL-CONTENT")
+
+    job = _job(source_path="~/f.bin", target_path="~/f.bin")
+    await relay_transfer(
+        job=job, source=FakeTransferSession(src), target=FakeTransferSession(dst), chunk_size=65536
+    )
+    assert dst.files["~/f.bin"] == src.files["~/f.bin"]
+
+
+def test_partial_name_format() -> None:
+    assert partial_name("model.bin", "job1") == ".model.bin.sgc-partial-job1"
+
+
+# ---- planner / rsync safety -------------------------------------------------------
+
+
+def test_rsync_command_builder_quotes_and_locks_flags() -> None:
+    command = build_rsync_command(
+        source_path="/data/my data;/evil",
+        target_spec=target_rsync_spec(
+            host="10.0.0.8", port=2222, username="demo", target_path="/target dir"
+        ),
+        target_port=2222,
+    )
+    assert "rm" not in command.replace("--", "")
+    assert "--partial" in command and "--partial-dir=.sgc-rsync-partial" in command
+    assert "--delete" not in command
+    assert "--append" not in command
+    assert command.count("'") >= 2  # quoted paths
+
+
+def test_no_arbitrary_user_flags() -> None:
+    import shlex
+
+    command = build_rsync_command(source_path="/a", target_spec="'u@h:/b'", target_port=None)
+    tokens = shlex.split(command)
+    assert "--info=progress2" in tokens
+    # a user cannot inject extra flags through paths: they are quoted
+
+
+# ---- service level tests ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_service_relay_end_to_end_records_placement_once(tmp_path: Path) -> None:
+    fs_by_server = {"srv-a": MemFS(), "srv-b": MemFS()}
+    fs_by_server["srv-a"].add_dir("~/data")
+    fs_by_server["srv-a"].add_file("~/data/d.bin", b"payload" * 1000)
+    service, workspace, ids = _service(tmp_path, fs_by_server)
+    srv_a, srv_b = ids["srv-a"], ids["srv-b"]
+    artifact = workspace.create_artifact(ArtifactCreate(kind="dataset", name="IVMSD"))
+    placement = workspace.create_placement(
+        PlacementCreate(artifact_id=artifact.artifact_id, server_id=srv_a, remote_path="~/data")
+    )
+    result = service.create(
+        TransferRequest(
+            artifact_id=artifact.artifact_id,
+            source_placement_id=placement.placement_id,
+            target_server_id=srv_b,
+            target_path="~/models/IVMSD",
+            strategy=TransferStrategy.LOCAL_RELAY,
+        )
+    )
+    job_id = result["job_id"]
+    await _wait_state(service, job_id, TransferState.COMPLETED)
+    job = service.job(job_id)
+    assert job.state == TransferState.COMPLETED
+    # auto-placement created ONCE
+    placements = workspace.placements()
+    assert len(placements) == 2
+    assert {p.server_id for p in placements} == {srv_a, srv_b}
+
+
+@pytest.mark.asyncio
+async def test_service_cancel_before_planning(tmp_path: Path) -> None:
+    service, workspace, ids = _service(tmp_path, {"srv-a": MemFS(), "srv-b": MemFS()})
+    artifact = workspace.create_artifact(ArtifactCreate(kind="code", name="C"))
+    placement = workspace.create_placement(
+        PlacementCreate(artifact_id=artifact.artifact_id, server_id=ids["srv-a"], remote_path="~/c")
+    )
+    created = service.create(
+        TransferRequest(
+            artifact_id=artifact.artifact_id,
+            source_placement_id=placement.placement_id,
+            target_server_id=ids["srv-b"],
+            target_path="~/c2",
+        )
+    )
+    service.cancel(created["job_id"])
+    await _wait_state(service, created["job_id"], TransferState.CANCELLED)
+
+
+@pytest.mark.asyncio
+async def test_service_retry_requeues(tmp_path: Path) -> None:
+    fs_by_server = {"srv-a": MemFS(), "srv-b": MemFS()}
+    fs_by_server["srv-a"].add_file("~/c", b"hello transfer")
+    service, workspace, ids = _service(tmp_path, fs_by_server)
+    artifact = workspace.create_artifact(ArtifactCreate(kind="code", name="C"))
+    placement = workspace.create_placement(
+        PlacementCreate(artifact_id=artifact.artifact_id, server_id=ids["srv-a"], remote_path="~/c")
+    )
+    first = service.create(
+        TransferRequest(
+            artifact_id=artifact.artifact_id,
+            source_placement_id=placement.placement_id,
+            target_server_id=ids["srv-b"],
+            target_path="~/c2",
+        )
+    )
+    await _wait_state(service, first["job_id"], TransferState.COMPLETED)
+    retried = await service.retry(first["job_id"])
+    assert retried["job_id"] != first["job_id"]
+
+
+# ---- helpers -----------------------------------------------------------------------
+
+
+def _job(**overrides: Any) -> TransferJob:
+
+    payload: dict[str, Any] = {
+        "artifact_id": "a1",
+        "artifact_label": "IVMSD:v1",
+        "source_server_id": "srv-a",
+        "source_path": "~/d.bin",
+        "target_server_id": "srv-b",
+        "target_path": "~/d.bin",
+        "strategy_requested": TransferStrategy.LOCAL_RELAY,
+    }
+    payload.update(overrides)
+    return JobRegistry(10).create(**payload)

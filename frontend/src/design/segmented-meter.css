@@ -1,0 +1,88 @@
+.meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.meter__strip {
+  position: relative;
+  display: inline-flex;
+  gap: 1px;
+  flex: none;
+  width: var(--metric-bar-width);
+  overflow: hidden;
+}
+
+/* Continuous soft bar — the Warm theme's metric primitive on shared markup. */
+.meter__fill {
+  display: none;
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--metric-bar-radius);
+  background: currentColor;
+}
+
+.meter__fill--ok {
+  color: var(--healthy);
+}
+
+.meter__fill--warn {
+  color: var(--warning);
+}
+
+.meter__fill--crit {
+  color: var(--danger);
+}
+
+html[data-theme="warm"] .meter__fill {
+  display: block;
+}
+
+/* Warm: the strip becomes a continuous soft track; segments fold away. */
+html[data-theme="warm"] .meter__strip {
+  display: block;
+  width: var(--metric-bar-width);
+  height: var(--metric-bar-height);
+  background: var(--surface-3);
+  border-radius: var(--metric-bar-radius);
+  gap: 0;
+}
+
+html[data-theme="warm"] .meter__seg {
+  display: none;
+}
+
+.meter__seg {
+  width: 3px;
+  height: var(--metric-bar-height);
+  border-radius: var(--metric-bar-radius);
+  background: var(--surface-3);
+}
+
+.meter__seg--filled {
+  opacity: 0.9;
+}
+
+.meter__seg--ok {
+  background: var(--healthy);
+}
+
+.meter__seg--warn {
+  background: var(--warning);
+}
+
+.meter__seg--crit {
+  background: var(--danger);
+}
+
+.meter__value {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.meter__value--empty {
+  color: var(--text-4);
+}

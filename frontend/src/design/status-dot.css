@@ -1,0 +1,68 @@
+.status-dot {
+  --dot-color: var(--text-4);
+  position: relative;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--dot-color);
+}
+
+.status-dot--online {
+  --dot-color: var(--healthy);
+}
+
+.status-dot--active {
+  --dot-color: var(--cold);
+}
+
+.status-dot--stale,
+.status-dot--error {
+  background: transparent;
+  border: 2px solid var(--dot-color);
+}
+
+.status-dot--stale {
+  --dot-color: var(--warning);
+}
+
+.status-dot--offline {
+  --dot-color: var(--danger);
+}
+
+.status-dot--connecting {
+  --dot-color: var(--accent);
+}
+
+.status-dot--unknown {
+  --dot-color: var(--text-4);
+}
+
+.status-dot--ring::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1.5px solid var(--dot-color);
+  opacity: 0.4;
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.status-dot--pulse {
+  animation: status-pulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot--pulse {
+    animation: none;
+  }
+}

@@ -1,0 +1,20 @@
+.spinner {
+  display: inline-block;
+  flex: none;
+  border: 1.5px solid var(--line-strong);
+  border-top-color: var(--text-3);
+  border-radius: 50%;
+  animation: spinner-rotate 0.9s linear infinite;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 3s;
+  }
+}

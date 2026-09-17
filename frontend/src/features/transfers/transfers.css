@@ -1,0 +1,180 @@
+/* Transfer Center (Phase 2): job rows, plan panel, method segmented control.
+   Tokens only — reuses ws-list/ws-row vocabulary; no theme-specific colors. */
+
+.tf-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tf-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tf-head__counts {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.tf-head__spacer {
+  flex: 1;
+}
+
+.tf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tf-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.tf-row__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tf-row__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tf-row__name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tf-row__flow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.tf-row__arrow {
+  color: var(--text-4);
+}
+
+.tf-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.tf-row__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tf-row__error {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.tf-row__actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+
+.tf-meter {
+  max-width: 420px;
+}
+
+.tf-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px;
+}
+
+.tf-skeleton__row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* -- dialog ------------------------------------------------------------------ */
+
+.tf-dialog__form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tf-method {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.tf-method__opt {
+  padding: 5px 12px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.tf-method__opt:hover {
+  background: var(--surface-3);
+}
+
+.tf-method__opt--active {
+  background: var(--accent-dim);
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.tf-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+
+.tf-plan__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-1);
+}
+
+.tf-plan__reason {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.tf-plan__busy {
+  font-size: 11.5px;
+  color: var(--text-3);
+}

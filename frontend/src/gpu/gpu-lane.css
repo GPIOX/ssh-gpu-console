@@ -1,0 +1,76 @@
+/* One-line GPU lane: name | util meter | VRAM | temp/power | availability | owners */
+.gpu-lane--nolabel .gpu-lane__name {
+  visibility: hidden; /* keeps grid alignment; the expanded card already labels the GPU */
+}
+
+.gpu-lane {
+  display: grid;
+  grid-template-columns: var(--gpu-lane-cols);
+  column-gap: var(--metric-col-gap, 16px);
+  align-items: center;
+  min-height: var(--metric-row-height);
+  min-width: 0;
+}
+
+.gpu-lane__name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.gpu-lane__util {
+  min-width: 0;
+}
+
+.gpu-lane__util .meter__strip {
+  overflow: hidden;
+}
+
+.gpu-lane__vram {
+  min-width: 0;
+}
+
+.gpu-lane__thermal {
+  font-size: 11.5px;
+}
+
+.gpu-lane__avail {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.gpu-lane__avail--free {
+  color: var(--healthy);
+}
+
+.gpu-lane__avail--active {
+  color: var(--cold);
+}
+
+.gpu-lane__avail--saturated {
+  color: var(--warning);
+}
+
+.gpu-lane__avail--na {
+  color: var(--text-4);
+}
+
+.gpu-lane__owners {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Warm: VRAM renders as the used/total pair only — no second bar (concept). */
+html[data-theme="warm"] .gpu-lane__vram .meter__strip {
+  display: none;
+}

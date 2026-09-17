@@ -1,0 +1,5 @@
+.vram-gauge .meter__value {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+}
