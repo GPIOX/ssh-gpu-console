@@ -1,12 +1,15 @@
 """Transfer job registry: RAM only, bounded, never persisted.
 
 Active jobs are keyed by job_id with their worker tasks; completed/failed
-history is a bounded deque. The service owns state transitions.
+history is a bounded deque. The service owns state transitions. A target lock
+(one active job per (target_server_id, normalized target_path)) keeps two jobs
+from concurrently writing the same target directory.
 """
 
 from __future__ import annotations
 
 import asyncio
+import posixpath
 import uuid
 from collections import deque
 from datetime import UTC, datetime
@@ -19,6 +22,12 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _target_key(server_id: str, path: str) -> tuple[str, str]:
+    """Lock key for a transfer target: the same directory under differently
+    written paths (trailing slash, redundant segments) must be ONE lock."""
+    return server_id, posixpath.normpath(path).rstrip("/") or "/"
+
+
 class JobRegistry:
     """Bounded in-RAM registry of transfer jobs."""
 
@@ -26,6 +35,7 @@ class JobRegistry:
         self._active: dict[str, TransferJob] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._history: deque[TransferJob] = deque(maxlen=history_limit)
+        self._target_locks: dict[tuple[str, str], str] = {}
         self._lock = asyncio.Lock()
 
     def create(
@@ -39,7 +49,14 @@ class JobRegistry:
         target_path: str,
         strategy_requested: TransferStrategy,
         excludes: list[str] | None = None,
+        immutable: bool = False,
     ) -> TransferJob:
+        key = _target_key(target_server_id, target_path)
+        if key in self._target_locks:
+            raise ConflictError(
+                f"target {target_server_id}:{key[1]} already has an active transfer;"
+                " wait for it to finish or choose another target path"
+            )
         job = TransferJob(
             job_id=uuid.uuid4().hex[:12],
             artifact_id=artifact_id,
@@ -50,8 +67,10 @@ class JobRegistry:
             target_path=target_path,
             strategy_requested=strategy_requested,
             excludes=list(excludes or []),
+            immutable=immutable,
             created_at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
+        self._target_locks[key] = job.job_id
         self._active[job.job_id] = job
         return job
 
@@ -72,7 +91,17 @@ class JobRegistry:
             _stamp(job, "started_at")
         if state in (TransferState.COMPLETED, TransferState.FAILED, TransferState.CANCELLED):
             _stamp(job, "finished_at")
+            self._release_target_lock(job)
             self._archive(job)
+
+    def _release_target_lock(self, job: TransferJob) -> None:
+        key = _target_key(job.target_server_id, job.target_path)
+        if self._target_locks.get(key) == job.job_id:
+            del self._target_locks[key]
+
+    def target_lock_holder(self, server_id: str, path: str) -> str | None:
+        """Job id currently holding the target lock for (server_id, path)."""
+        return self._target_locks.get(_target_key(server_id, path))
 
     def _archive(self, job: TransferJob) -> None:
         self._active.pop(job.job_id, None)

@@ -37,16 +37,23 @@ from app.workspace.service import WorkspaceService
 
 
 class MemFS:
-    """In-memory tree: dirs as a set, files as path->bytes."""
+    """In-memory tree: dirs as a set, files as path->bytes (mtime-aware so
+    the relay's incremental checks stay honest against this fake)."""
 
     def __init__(self) -> None:
         self.dirs: set[str] = {"/"}
         self.files: dict[str, bytes] = {}
+        self.mtimes: dict[str, int] = {}
         self.writes = 0
 
     def stat(self, path: str) -> FileStat:
         if path in self.files:
-            return FileStat(exists=True, is_dir=False, size_b=len(self.files[path]))
+            return FileStat(
+                exists=True,
+                is_dir=False,
+                size_b=len(self.files[path]),
+                mtime_s=self.mtimes.get(path, 0),
+            )
         if path in self.dirs or path == "/" or path == "~":
             return FileStat(exists=True, is_dir=True)
         return FileStat(exists=False, is_dir=False)
@@ -69,6 +76,9 @@ class FakeTransferSession:
     async def stat(self, path: str) -> FileStat:
         return self._fs.stat(path)
 
+    async def lstat(self, path: str) -> FileStat:
+        return self._fs.stat(path)
+
     async def mkdir(self, path: str) -> None:
         self._fs.add_dir(path)
         # parents implicit in this fake
@@ -81,28 +91,35 @@ class FakeTransferSession:
                 names.append(file_path[len(prefix) :])
         return names
 
-    async def open_reader(self, path: str) -> Any:
+    async def open_reader(self, path: str, *, offset: int = 0) -> Any:
         content = self._fs.files.get(path, b"")
-        return _FakeReader(content, self._chunk_reads)
+        return _FakeReader(content, self._chunk_reads, offset)
 
-    async def open_writer(self, path: str) -> Any:
-        return _FakeWriter(path, self._fs, self._chunk_reads)
+    async def open_writer(self, path: str, *, offset: int = 0, truncate: bool = False) -> Any:
+        base = self._fs.files.get(path, b"")[:offset] if offset > 0 else b""
+        return _FakeWriter(path, self._fs, self._chunk_reads, base)
+
+    async def set_mtime(self, path: str, mtime_s: int) -> None:
+        self._fs.mtimes[path] = mtime_s
 
     async def rename(self, source: str, target: str) -> None:
         if source in self._fs.files:
             self._fs.files[target] = self._fs.files.pop(source)
+            if source in self._fs.mtimes:
+                self._fs.mtimes[target] = self._fs.mtimes.pop(source)
 
     async def remove(self, path: str) -> None:
         self._fs.files.pop(path, None)
+        self._fs.mtimes.pop(path, None)
 
     async def close(self) -> None:
         self.closed = True
 
 
 class _FakeReader:
-    def __init__(self, content: bytes, chunk_reads: list[int] | None) -> None:
+    def __init__(self, content: bytes, chunk_reads: list[int] | None, offset: int = 0) -> None:
         self._content = content
-        self._pos = 0
+        self._pos = offset
         self._chunk_reads = chunk_reads
 
     async def read(self, size: int) -> bytes:
@@ -117,10 +134,16 @@ class _FakeReader:
 
 
 class _FakeWriter:
-    def __init__(self, path: str, fs: MemFS, chunk_reads: list[int] | None) -> None:
+    def __init__(
+        self,
+        path: str,
+        fs: MemFS,
+        chunk_reads: list[int] | None,
+        base: bytes = b"",
+    ) -> None:
         self._path = path
         self._fs = fs
-        self._buffer = b""
+        self._buffer = bytearray(base)
         self._chunk_reads = chunk_reads
 
     async def write(self, data: bytes) -> None:
@@ -129,7 +152,7 @@ class _FakeWriter:
         self._buffer += data
 
     async def close(self) -> None:
-        self._fs.files[self._path] = self._buffer
+        self._fs.files[self._path] = bytes(self._buffer)
 
 
 class _CancelledSession(FakeTransferSession):
@@ -292,7 +315,11 @@ async def test_relay_single_file_roundtrip() -> None:
     src.add_file("~/data/model.bin", b"x" * 4096)
     job = _job(source_path="~/data/model.bin", target_path="~/models/model.bin")
     await relay_transfer(
-        job=job, source=FakeTransferSession(src), target=FakeTransferSession(dst), chunk_size=65536
+        job=job,
+        source=FakeTransferSession(src),
+        target=FakeTransferSession(dst),
+        chunk_size=65536,
+        immutable=True,
     )
     assert dst.files["~/models/model.bin"] == b"x" * 4096
     assert job.files_done == 1 and job.bytes_done == 4096
@@ -308,7 +335,11 @@ async def test_relay_directory_copy_update_not_mirror() -> None:
 
     job = _job(source_path="~/data/dset", target_path="~/dset")
     await relay_transfer(
-        job=job, source=FakeTransferSession(src), target=FakeTransferSession(dst), chunk_size=65536
+        job=job,
+        source=FakeTransferSession(src),
+        target=FakeTransferSession(dst),
+        chunk_size=65536,
+        immutable=True,
     )
     assert dst.files["~/dset/a.bin"] == b"A" * 2048
     assert dst.files["~/dset/b.bin"] == b"B" * 1024
@@ -328,6 +359,7 @@ async def test_relay_uses_bounded_chunks_never_whole_file() -> None:
         source=FakeTransferSession(src, reads),
         target=FakeTransferSession(dst),
         chunk_size=65536,
+        immutable=False,
     )
     assert reads and max(reads) <= 65536
     assert dst.files["~/d.bin"] == big
@@ -341,31 +373,44 @@ async def test_relay_partial_file_never_corrupts_target() -> None:
 
     job = _job(source_path="~/f.bin", target_path="~/f.bin")
     await relay_transfer(
-        job=job, source=FakeTransferSession(src), target=FakeTransferSession(dst), chunk_size=65536
+        job=job,
+        source=FakeTransferSession(src),
+        target=FakeTransferSession(dst),
+        chunk_size=65536,
+        immutable=False,
     )
     assert dst.files["~/f.bin"] == src.files["~/f.bin"]
 
 
 def test_partial_name_format() -> None:
-    assert partial_name("model.bin", "job1") == ".model.bin.sgc-partial-job1"
+    assert partial_name("model.bin") == ".model.bin.sgc-partial"
 
 
 # ---- planner / rsync safety -------------------------------------------------------
 
 
 def test_rsync_command_builder_quotes_and_locks_flags() -> None:
+    import shlex
+
     command = build_rsync_command(
         source_path="/data/my data;/evil",
-        target_spec=target_rsync_spec(
-            host="10.0.0.8", port=2222, username="demo", target_path="/target dir"
-        ),
+        target_spec=target_rsync_spec(host="10.0.0.8", username="demo", target_path="/target dir"),
         target_port=2222,
     )
     assert "rm" not in command.replace("--", "")
     assert "--partial" in command and "--partial-dir=.sgc-rsync-partial" in command
     assert "--delete" not in command
     assert "--append" not in command
-    assert command.count("'") >= 2  # quoted paths
+    assert command.count("'") >= 2  # quoted paths + quoted -e ssh options
+    assert "StrictHostKeyChecking=yes" in command  # never accept-new / no known_hosts writes
+    # the port is encoded exactly once, inside the -e ssh options
+    assert command.count("2222") == 1
+    tokens = shlex.split(command)
+    rsync_tokens = tokens[: tokens.index("-e")]
+    for banned in ("-a", "-o", "-g", "--delete", "--append", "--append-verify"):
+        assert banned not in rsync_tokens
+    for required in ("-r", "-l", "-t", "-p", "--safe-links", "--info=progress2"):
+        assert required in rsync_tokens
 
 
 def test_no_arbitrary_user_flags() -> None:
@@ -374,7 +419,14 @@ def test_no_arbitrary_user_flags() -> None:
     command = build_rsync_command(source_path="/a", target_spec="'u@h:/b'", target_port=None)
     tokens = shlex.split(command)
     assert "--info=progress2" in tokens
+    rsync_tokens = tokens[: tokens.index("-e")]
+    for banned in ("-a", "-o", "-g", "--delete", "--append", "--append-verify"):
+        assert banned not in rsync_tokens
+    for required in ("-r", "-l", "-t", "-p", "--safe-links", "--partial"):
+        assert required in rsync_tokens
     # a user cannot inject extra flags through paths: they are quoted
+    assert tokens[tokens.index("--") + 1] == "/a"
+    assert tokens[-1] == "u@h:/b"
 
 
 # ---- service level tests ----------------------------------------------------------
@@ -559,7 +611,11 @@ async def test_relay_survives_dot_entries_from_listing() -> None:
             return [".", "..", *names]
 
     await relay_transfer(
-        job=job, source=DottedSession(src), target=DottedSession(dst), chunk_size=1024
+        job=job,
+        source=DottedSession(src),
+        target=DottedSession(dst),
+        chunk_size=1024,
+        immutable=True,
     )
     assert dst.files["~/mirror/data/model.bin"] == b"abc" * 100
     assert dst.files["~/mirror/data/sub/piece.bin"] == b"xyz" * 100
@@ -584,6 +640,7 @@ async def test_relay_honors_project_excludes() -> None:
         target=FakeTransferSession(dst),
         chunk_size=1024,
         excludes=("dataset", "*.log"),
+        immutable=False,
     )
     assert dst.files["~/app-mirror/src/main.py"] == b"code"
     assert "~/app-mirror/dataset/D1.bin" not in dst.files
@@ -602,6 +659,7 @@ async def test_relay_single_file_transfer_ignores_excludes() -> None:
         target=FakeTransferSession(dst),
         chunk_size=1024,
         excludes=("*.bin",),
+        immutable=False,
     )
     assert dst.files["~/mirror/model.bin"] == b"w" * 512
 

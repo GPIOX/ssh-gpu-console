@@ -6,10 +6,10 @@ Directories: the relay's counter walk and its copy walk are two separate
 tree walks over a LIVE remote tree, so files can appear or vanish between
 them (field-observed: files_done ended one above files_total). When the
 job's own counters disagree, we therefore re-walk the source with the same
-semantics as the relay and require only that every currently-existing
-source file exists at the mirrored path on the target. Copy/update
-semantics (the relay never deletes anything on the target) mean extra
-files on the target — pre-existing files or .sgc-partial residue — are
+semantics as the relay and require that every currently-existing source
+file exists at the mirrored path on the target with a matching size.
+Copy/update semantics (the relay never deletes anything on the target) mean
+extra files on the target — pre-existing files or .sgc-partial residue — are
 always acceptable and never fail verification.
 """
 
@@ -33,7 +33,8 @@ async def quick_verify(
     Single file: target size must equal the source size. Directories: when
     the job's own file counters agree, counter parity is enough (plus an
     optional cheap byte-total check); when they disagree, re-walk the
-    source tree file-by-file. No remote SHA256 in this phase.
+    source tree file-by-file (existence + size parity). No remote SHA256
+    in this phase.
     """
     target_stat = await target.stat(job.target_path)
     if not target_stat.exists:
@@ -65,8 +66,8 @@ async def quick_verify(
     # SLOW PATH: counters disagree (files appeared/vanished mid-transfer on
     # the live tree) or bytes were never tracked. Re-walk the source with
     # the relay's exact walk semantics; every currently-existing source
-    # file must exist on the target at the mirrored path (existence only —
-    # sources may have changed since they were copied). Extra target files
+    # file must exist on the target at the mirrored path with a matching
+    # size (the quick-verify boundary — still no SHA256). Extra target files
     # are fine.
     missing = await _first_missing_target_file(job, source, target)
     if missing is not None:
@@ -81,7 +82,13 @@ async def _first_missing_target_file(
 ) -> str | None:
     """Re-walk the source tree exactly like the relay's count/copy walks and
     return the FIRST source file whose mirror path is absent on the target
-    (or None when every current source file is present)."""
+    OR whose size differs from the source (None when every current source
+    file is present with matching size).
+
+    Size parity is the quick-verify boundary — still no SHA256. A source
+    file modified after it was copied (size changed) fails verification on
+    purpose: that file genuinely needs to be re-transferred.
+    """
     excludes = tuple(job.excludes)
     stack = [job.source_path]
     while stack:
@@ -99,6 +106,6 @@ async def _first_missing_target_file(
             relative = posixpath.relpath(source_child, job.source_path)
             target_child = f"{job.target_path.rstrip('/')}/{relative}"
             target_child_stat = await target.stat(target_child)
-            if not target_child_stat.exists:
+            if not target_child_stat.exists or target_child_stat.size_b != stat.size_b:
                 return target_child
     return None

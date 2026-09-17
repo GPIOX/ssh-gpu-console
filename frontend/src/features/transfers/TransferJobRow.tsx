@@ -1,9 +1,12 @@
 /**
  * One transfer job row (per DESIGN.md restraint): artifact label semibold,
  * the 源 ↓ 策略 ↓ 目标 flow, a continuous segmented meter over bytes (or
- * files when bytes are unknown), rate + ETA, a strategy chip, the mono
- * current path, verb-carrying Cancel while active, Retry on terminal states,
- * and the backend's error message verbatim on failed rows.
+ * files when bytes are unknown), rate + ETA, a strategy chip (planner reason
+ * on hover), the mono current path, verb-carrying Cancel while active, Retry
+ * on terminal states, and the backend's error message verbatim on failed rows.
+ * Phase 3: a resumed/incremental kind chip next to the strategy chip, quiet
+ * mono resume/skip stats, and a warn chip counting runner warnings (first ≤3
+ * on hover) — all silent for fresh transfers.
  */
 
 import { Button, Chip, Panel, SegmentedMeter, type ChipTone } from "../../design";
@@ -11,8 +14,8 @@ import { tf, useT } from "../../i18n";
 import { useConsoleStore } from "../../store/consoleStore";
 import type { ServerRecord } from "../../types/models";
 import type { TransferJob, TransferState, TransferStrategy } from "../../types/transfers";
-import { isActiveTransferState } from "../../types/transfers";
-import { formatBps, formatBytesPair } from "../../utils/format";
+import { isActiveTransferState, transferKind } from "../../types/transfers";
+import { formatBps, formatBytes, formatBytesPair } from "../../utils/format";
 
 export function stateWord(t: ReturnType<typeof useT>, state: TransferState): string {
   switch (state) {
@@ -76,6 +79,9 @@ export function TransferJobRow({ job, onCancel, onRetry }: TransferJobRowProps) 
 
   const used = job.strategy_used ?? job.strategy_requested;
   const strategy = strategyWord(t, used);
+  const kind = transferKind(job);
+  // The strategy chip's reason is the planner's plan.reason, hover-only.
+  const strategyTitle = job.strategy_reason !== "" ? job.strategy_reason : undefined;
 
   // Continuous progress over the reported total; when bytes are unknown fall
   // back to file counts — never fabricate a percentage.
@@ -109,7 +115,19 @@ export function TransferJobRow({ job, onCancel, onRetry }: TransferJobRowProps) 
         <div className="tf-row__head">
           <span className="tf-row__name">{job.artifact_label}</span>
           <Chip tone={stateTone(job.state)}>{stateWord(t, job.state)}</Chip>
-          <Chip mono>{strategy}</Chip>
+          <Chip mono title={strategyTitle}>
+            {strategy}
+          </Chip>
+          {kind === "incremental" && (
+            <Chip mono tone="warn">
+              {t.transfers.kindIncremental}
+            </Chip>
+          )}
+          {kind === "resumed" && (
+            <Chip mono tone="cold">
+              {t.transfers.kindResumed}
+            </Chip>
+          )}
         </div>
         <div className="tf-row__flow mono">
           <span>{serverName(job.source_server_id)}</span>
@@ -131,9 +149,30 @@ export function TransferJobRow({ job, onCancel, onRetry }: TransferJobRowProps) 
           aria-label={job.artifact_label}
         />
         <div className="tf-row__meta mono tnum">
-          {job.rate_bps !== null && <span>{formatBps(job.rate_bps)}</span>}
-          {etaMinutes !== null && (
+          {/* rate/eta describe the run in progress; a terminal row would only
+              show frozen stale numbers (e.g. "~254 min left" on a cancel). */}
+          {active && job.rate_bps !== null && <span>{formatBps(job.rate_bps)}</span>}
+          {active && etaMinutes !== null && (
             <span>{tf(t.transfers.etaMinutes, { n: etaMinutes })}</span>
+          )}
+          {job.resumed_bytes > 0 && (
+            <span>{tf(t.transfers.resumedBytes, { size: formatBytes(job.resumed_bytes) })}</span>
+          )}
+          {job.files_skipped > 0 && (
+            <span>
+              {tf(t.transfers.filesSkipped, {
+                n: job.files_skipped,
+                s: job.files_skipped === 1 ? "" : "s",
+              })}
+            </span>
+          )}
+          {job.warnings.length > 0 && (
+            <Chip
+              tone="warn"
+              title={job.warnings.slice(0, 3).join("\n")}
+            >
+              {tf(t.transfers.warningsCount, { n: job.warnings.length })}
+            </Chip>
           )}
           {job.current_path !== null && job.current_path !== "" && (
             <span className="tf-row__path mono" title={job.current_path}>

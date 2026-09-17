@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.core.errors import ConflictError, NotFoundError
 from app.core.logging import get_logger
@@ -59,6 +59,7 @@ class TransferService:
             history_limit=int(getattr(settings, "transfer_job_history", 100))
         )
         self._global_slot = asyncio.Semaphore(int(getattr(settings, "max_transfers_global", 2)))
+        self._cancel_events: dict[str, asyncio.Event] = {}
         self._stopped = False
 
     # ---- read model (REST; RAM only, never triggers SSH) -----------------------
@@ -112,6 +113,7 @@ class TransferService:
             artifact_id=request.artifact_id,
             ssh=self._ssh,
             excludes=self._resolve_excludes(request.artifact_id),
+            probe_timeout_s=self._probe_timeout_s(),
         )
 
     # ---- creation -----------------------------------------------------------------
@@ -131,6 +133,12 @@ class TransferService:
         if placement.server_id == request.target_server_id:
             raise ConflictError("source and target server are the same")
 
+        # Explicit per-artifact override wins; otherwise immutable unless code
+        # (dataset/model targets must not be mutated by a later copy).
+        immutable = (
+            artifact.immutable if artifact.immutable is not None else artifact.kind != "code"
+        )
+
         job = self._jobs.create(
             artifact_id=artifact.artifact_id,
             artifact_label=_artifact_label(artifact),
@@ -140,7 +148,9 @@ class TransferService:
             target_path=_clean_path(request.target_path),
             strategy_requested=request.strategy,
             excludes=self._resolve_excludes(request.artifact_id),
+            immutable=immutable,
         )
+        self._cancel_events[job.job_id] = asyncio.Event()
         task = asyncio.create_task(self._run_job(job))
         self._jobs.bind_task(job.job_id, task)
         return {"job_id": job.job_id}
@@ -157,8 +167,12 @@ class TransferService:
         ):
             raise ConflictError(f"job {job_id} is not cancellable in state {job.state.value}")
         self._jobs.transition(job, TransferState.CANCELLED)
-        # Workers observe the cancelled state at their next checkpoint; queued
-        # jobs never start planning afterwards.
+        # Wake the running worker NOW: the rsync path races this event against
+        # the remote command and closes the session on cancel; the relay path
+        # keeps observing job.state at its chunk checkpoints.
+        event = self._cancel_events.get(job_id)
+        if event is not None:
+            event.set()
 
     async def retry(self, job_id: str) -> dict[str, str]:
         """Re-queue a finished job's parameters as a NEW job."""
@@ -201,6 +215,8 @@ class TransferService:
             if job.state.value != TransferState.CANCELLED.value:
                 self._jobs.fail(job, "transfer_failed", str(exc)[:300])
             logger.info("transfer %s failed: %s", job.job_id, str(exc)[:200])
+        finally:
+            self._cancel_events.pop(job.job_id, None)
 
     async def _plan_and_run(self, job: TransferJob) -> None:
         from app.transfer.planner import plan_transfer
@@ -222,36 +238,41 @@ class TransferService:
             artifact_id=job.artifact_id,
             ssh=self._ssh,
             excludes=list(job.excludes),
+            probe_timeout_s=self._probe_timeout_s(),
         )
         if self._jobs.find(job.job_id) is None:
             return
+        job.strategy_reason = plan.reason
         if plan.strategy_selected is None:
             self._jobs.fail(job, "strategy_unavailable", plan.reason[:300])
             return
         job.strategy_used = plan.strategy_selected
+        if not await self._preflight_space(job, plan):
+            return  # failed: not enough space and nothing to build on
 
         source_slot = self._ssh.transfer_slot_or_create(job.source_server_id)
         target_slot = self._ssh.transfer_slot_or_create(job.target_server_id)
         async with source_slot, target_slot:
             if self._jobs.find(job.job_id) is None:
                 return
-            if plan.strategy_selected is TransferStrategy.DIRECT_RSYNC:
-                await self._run_rsync(job, source_server, target_server)
-            else:
-                self._jobs.transition(job, TransferState.RUNNING)
-                import contextlib
-
-                source_session, target_session = await self._relay_sessions(
-                    source_server, target_server
-                )
-                try:
-                    await _relay(job, source_session, target_session, self._settings)
-                except CancelRequested:
+            try:
+                if plan.strategy_selected is TransferStrategy.DIRECT_RSYNC:
+                    await self._run_rsync(job, source_server, target_server)
+                else:
+                    self._jobs.transition(job, TransferState.RUNNING)
+                    source_session, target_session = await self._relay_sessions(
+                        source_server, target_server
+                    )
+                    try:
+                        await _relay(job, source_session, target_session, self._settings)
+                    finally:
+                        with contextlib.suppress(Exception):
+                            await source_session.close()  # type: ignore[attr-defined]
+            except CancelRequested:
+                # cancel() already transitioned+archived; never double-archive.
+                if job.state is not TransferState.CANCELLED:
                     self._jobs.transition(job, TransferState.CANCELLED)
-                    return
-                finally:
-                    with contextlib.suppress(Exception):
-                        await source_session.close()  # type: ignore[attr-defined]
+                return
 
         if self._jobs.find(job.job_id) is None:
             return
@@ -271,20 +292,112 @@ class TransferService:
         source_server: ServerRecord,
         target_server: ServerRecord,
     ) -> None:
-        from app.transfer.strategies.direct_rsync import CancelRequested, rsync_transfer
+        from app.transfer.planner import build_rsync_command, parse_progress2, target_rsync_spec
 
         if job.state.value == TransferState.CANCELLED.value:
             raise CancelRequested(job.job_id)
         self._jobs.transition(job, TransferState.RUNNING)
-        exit_code = await rsync_transfer(
-            job=job,
-            ssh=self._ssh,
-            source_server=source_server,
-            target_server=target_server,
-            source_size_b=await self._source_size(job),
+
+        target_params = self._ssh.resolve_params_for(target_server)
+        spec = target_rsync_spec(
+            host=target_params.host,
+            username=target_params.username,
+            target_path=job.target_path,
         )
-        if exit_code != 0:
-            raise ConflictError(f"rsync exited with code {exit_code}")
+        command = build_rsync_command(
+            source_path=job.source_path,
+            target_spec=spec,
+            target_port=target_params.port,
+            excludes=list(job.excludes),
+        )
+        source_size_b = await self._source_size(job)
+        if source_size_b is not None and source_size_b > 0:
+            job.bytes_total = source_size_b
+
+        async def _on_stdout(chunk: str) -> None:
+            parse_progress2(chunk, job)
+            if job.bytes_total is not None and job.bytes_done > job.bytes_total:
+                job.bytes_done = job.bytes_total
+
+        session = await self._ssh.transfer_command_session(source_server)
+        run_task = asyncio.create_task(session.run(command, timeout_s=3600.0, on_stdout=_on_stdout))
+        cancel_event = self._cancel_events.get(job.job_id)
+        wait_task = asyncio.create_task(cancel_event.wait()) if cancel_event is not None else None
+        try:
+            if wait_task is None:
+                exit_code = await run_task
+            else:
+                race: set[asyncio.Task[Any]] = {run_task, wait_task}
+                done, _pending = await asyncio.wait(race, return_when=asyncio.FIRST_COMPLETED)
+                if run_task not in done and wait_task in done:
+                    # User cancel won the race: close the channel so the remote
+                    # rsync terminates now, reap the runner, then report cancel.
+                    with contextlib.suppress(Exception):
+                        await session.cancel()
+                    await asyncio.gather(run_task, return_exceptions=True)
+                    raise CancelRequested(job.job_id)
+                if not wait_task.done():
+                    wait_task.cancel()
+                    await asyncio.gather(wait_task, return_exceptions=True)
+                exit_code = run_task.result()  # re-raises transport failures
+            if exit_code != 0:
+                raise ConflictError(f"rsync exited with code {exit_code}")
+        finally:
+            await self._reap_rsync_tasks(run_task, wait_task)
+            with contextlib.suppress(Exception):
+                await session.close()
+
+    @staticmethod
+    async def _reap_rsync_tasks(
+        run_task: asyncio.Task[int], wait_task: asyncio.Task[bool] | None
+    ) -> None:
+        tasks: list[asyncio.Task[Any]] = [run_task]
+        if wait_task is not None:
+            tasks.append(wait_task)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _preflight_space(self, job: TransferJob, plan: TransferPlan) -> bool:
+        """Refuse hopeless transfers; warn and continue when the target exists.
+
+        Only decides when BOTH probes succeeded and free < needed. A missing
+        target with insufficient free space cannot succeed -> FAILED. An
+        existing target may hold incremental data, so the estimate is not
+        reliable -> warning only. Probe failures never block the job.
+        """
+        if not (
+            plan.source_size_b is not None
+            and plan.target_free_b is not None
+            and plan.target_free_b < plan.source_size_b
+        ):
+            return True
+        needed = plan.source_size_b
+        free = plan.target_free_b
+        try:
+            probe = await self._executor(job.target_server_id).run(
+                f"test -e {_q(job.target_path)}", timeout_s=10
+            )
+        except Exception:
+            return True  # cannot probe the target: do not fail on a guess
+        if probe.exit_code == 0:
+            _add_warning(
+                job,
+                f"target may be insufficient: need {needed} B, only {free} B free,"
+                " but the target already exists (incremental data may need less)",
+            )
+            return True
+        self._jobs.fail(
+            job,
+            "insufficient_space",
+            f"target {job.target_path} on {job.target_server_id} needs {needed} B"
+            f" but only {free} B are free and the target does not exist yet",
+        )
+        return False
+
+    def _probe_timeout_s(self) -> float:
+        return float(getattr(self._settings, "transfer_preflight_timeout_s", 15.0))
 
     async def _verify(self, job: TransferJob, strategy: TransferStrategy) -> tuple[bool, str]:
         from app.transfer.verifier import quick_verify
@@ -373,6 +486,10 @@ class TransferService:
         """Cancel all running/queued jobs, close transfer sessions."""
         self._stopped = True
         self._jobs.cancel_all()
+        # Wake any worker parked in the rsync race so its session.cancel()
+        # path runs before the raw task cancellation below.
+        for event in self._cancel_events.values():
+            event.set()
         tasks = list(self._jobs._tasks.values())
         for task in tasks:
             task.cancel()
@@ -392,8 +509,16 @@ async def _relay(
         source=source,
         target=target,
         chunk_size=int(getattr(settings, "transfer_chunk_size_b", 4194304)),
+        immutable=job.immutable,
         excludes=list(job.excludes),
+        progress_interval_s=float(getattr(settings, "transfer_progress_emit_interval_s", 0.5)),
     )
+
+
+def _add_warning(job: TransferJob, message: str) -> None:
+    """Bounded warning append: the model caps warnings at 20 entries."""
+    if len(job.warnings) < 20:
+        job.warnings.append(message[:300])
 
 
 def _clean_path(path: str) -> str:

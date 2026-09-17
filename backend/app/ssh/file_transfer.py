@@ -15,9 +15,14 @@ from typing import Any, Protocol, runtime_checkable
 
 @dataclass(frozen=True, slots=True)
 class FileStat:
+    """Capability boundary: SFTP v3 exposes mtime only in whole seconds, so
+    ``mtime_s`` carries second precision (never nanoseconds)."""
+
     exists: bool
     is_dir: bool
     size_b: int = 0
+    is_symlink: bool = False
+    mtime_s: int = 0
 
 
 class TransferSessionError(Exception):
@@ -44,6 +49,10 @@ class TransferSession(Protocol):
 
     async def stat(self, path: str) -> FileStat: ...
 
+    async def lstat(self, path: str) -> FileStat:
+        """stat() without following symlinks (identifies a symlink entry)."""
+        ...
+
     async def mkdir(self, path: str) -> None:
         """Create directory (including missing parents)."""
         ...
@@ -52,12 +61,24 @@ class TransferSession(Protocol):
         """Entry names of a directory (no types)."""
         ...
 
-    async def open_reader(self, path: str) -> Any:
-        """Async file reader with awaitable read(n) and close()."""
+    async def open_reader(self, path: str, *, offset: int = 0) -> Any:
+        """Async file reader with awaitable read(n) and close().
+
+        offset > 0 starts reading at that byte (resume reads).
+        """
         ...
 
-    async def open_writer(self, path: str) -> Any:
-        """Async file writer with write(data) and close()."""
+    async def open_writer(self, path: str, *, offset: int = 0, truncate: bool = False) -> Any:
+        """Async file writer with write(data) and close().
+
+        truncate=True overwrites from zero; offset>0 resumes AT that byte
+        without truncating; the default keeps the legacy create/overwrite
+        behavior for fresh partial files.
+        """
+        ...
+
+    async def set_mtime(self, path: str, mtime_s: int) -> None:
+        """Set mtime (seconds precision); failures propagate to the caller."""
         ...
 
     async def rename(self, source: str, target: str) -> None: ...

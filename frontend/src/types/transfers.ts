@@ -31,6 +31,21 @@ export function isActiveTransferState(state: TransferState): boolean {
   return ACTIVE_TRANSFER_STATES.includes(state);
 }
 
+/** Row-level transfer kind shown next to the strategy chip. */
+export type TransferKind = "fresh" | "resumed" | "incremental";
+
+/**
+ * "incremental" wins when both apply: a resumed-partial is subsumed by the
+ * incremental-sync semantics. A fresh transfer renders no chip at all.
+ */
+export function transferKind(
+  job: Pick<TransferJob, "resumed_bytes" | "bytes_skipped">,
+): TransferKind {
+  if (job.bytes_skipped > 0) return "incremental";
+  if (job.resumed_bytes > 0) return "resumed";
+  return "fresh";
+}
+
 export interface TransferPlan {
   artifact_id: string;
   source_server_id: string;
@@ -47,6 +62,10 @@ export interface TransferPlan {
   source_size_b: number | null;
   /** Effective exclusions (union of referencing projects' defaults). */
   excludes: string[];
+  /** Preflight target disk probe; null = not probed / unknown. */
+  target_free_b: number | null;
+  /** "Not enough space" warning text for the plan preview; "" = none. */
+  space_warning: string;
 }
 
 export interface TransferRequest {
@@ -73,6 +92,19 @@ export interface TransferJob {
   strategy_used: TransferStrategy | null;
   state: TransferState;
   excludes: string[];
+
+  /** Phase 3 run bookkeeping (all defaulted server-side). */
+  /** dataset/model: the target must not be mutated; code artifacts may. */
+  immutable: boolean;
+  /** Copy of plan.reason for job detail views. */
+  strategy_reason: string;
+  /** Bytes carried over from an existing partial file at job start. */
+  resumed_bytes: number;
+  /** Incremental sync: files/bytes already up-to-date on the target. */
+  files_skipped: number;
+  bytes_skipped: number;
+  /** Non-fatal runner notes, e.g. skipped symlinks (≤20 entries). */
+  warnings: string[];
 
   bytes_total: number | null;
   bytes_done: number;

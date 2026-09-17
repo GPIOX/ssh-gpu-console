@@ -38,6 +38,12 @@ function makeJob(overrides: Partial<TransferJob> = {}): TransferJob {
     strategy_used: "direct_rsync",
     state: "running",
     excludes: [],
+    immutable: false,
+    strategy_reason: "direct rsync preflight passed (auto)",
+    resumed_bytes: 0,
+    files_skipped: 0,
+    bytes_skipped: 0,
+    warnings: [],
     bytes_total: 10 * 1024 ** 3,
     bytes_done: 2 * 1024 ** 3,
     files_total: 100,
@@ -67,6 +73,8 @@ const planFixture: TransferPlan = {
   source_exists: true,
   source_size_b: 10 * 1024 ** 3,
   excludes: [],
+  target_free_b: null,
+  space_warning: "",
 };
 
 const servers: ServerRecord[] = [

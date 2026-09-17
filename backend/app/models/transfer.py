@@ -1,6 +1,14 @@
 """Cross-server transfer wire models (Sol-owned contract).
 
 TransferJob is a runtime object: RAM only, never persisted to workspace.json.
+
+Phase 3 additions: TransferJob carries run bookkeeping — `immutable` (dataset/
+model targets must not be mutated), `strategy_reason` (copy of plan.reason for
+display), `resumed_bytes` (bytes taken over from an existing partial),
+`files_skipped`/`bytes_skipped` (incremental sync skips), `warnings` (bounded
+list, e.g. skipped symlink reasons) — and TransferPlan carries the preflight
+target disk probe (`target_free_b`, None = not probed) plus `space_warning`
+for the plan preview UI.
 """
 
 from __future__ import annotations
@@ -53,6 +61,10 @@ class TransferPlan(BaseModel):
     # Effective exclusions (union of the referencing projects' defaults) shown
     # in the plan preview so the user sees what will NOT be copied.
     excludes: list[str] = Field(default_factory=list, max_length=32)
+    # Preflight target disk probe (None = not probed) and the "not enough
+    # space" warning text for the plan preview UI.
+    target_free_b: int | None = None
+    space_warning: str = ""
 
 
 class TransferRequest(BaseModel):
@@ -82,6 +94,15 @@ class TransferJob(BaseModel):
     strategy_used: TransferStrategy | None = None
     state: TransferState = TransferState.QUEUED
     excludes: list[str] = Field(default_factory=list, max_length=32)
+
+    # Phase 3 run bookkeeping (all defaulted so existing constructors keep
+    # working); the service fills these at create/run time.
+    immutable: bool = False  # dataset/model: target must not be mutated; code may
+    strategy_reason: str = ""  # copy of plan.reason for job detail views
+    resumed_bytes: int = 0  # bytes carried over from an existing partial file
+    files_skipped: int = 0  # incremental sync: files already up-to-date on target
+    bytes_skipped: int = 0  # incremental sync: bytes already up-to-date on target
+    warnings: list[str] = Field(default_factory=list, max_length=20)  # e.g. skipped symlinks
 
     bytes_total: int | None = None
     bytes_done: int = 0

@@ -270,7 +270,31 @@ class SftpTransferSession:
         except _MISSING_SFTP:
             return FileStat(exists=False, is_dir=False)
         mode = info.permissions or 0
-        return FileStat(exists=True, is_dir=stat_module.S_ISDIR(mode), size_b=info.size or 0)
+        # stat() follows symlinks, so S_ISLNK is never set here. getattr keeps
+        # minimal attrs objects usable (mtime is best-effort metadata).
+        return FileStat(
+            exists=True,
+            is_dir=stat_module.S_ISDIR(mode),
+            size_b=info.size or 0,
+            is_symlink=stat_module.S_ISLNK(mode),
+            mtime_s=int(getattr(info, "mtime", 0) or 0),
+        )
+
+    async def lstat(self, path: str) -> FileStat:
+        import stat as stat_module
+
+        try:
+            info = await self._sftp.lstat(path)
+        except _MISSING_SFTP:
+            return FileStat(exists=False, is_dir=False)
+        mode = info.permissions or 0
+        return FileStat(
+            exists=True,
+            is_dir=stat_module.S_ISDIR(mode),
+            size_b=info.size or 0,
+            is_symlink=stat_module.S_ISLNK(mode),
+            mtime_s=int(getattr(info, "mtime", 0) or 0),
+        )
 
     async def mkdir(self, path: str) -> None:
         import posixpath
@@ -303,11 +327,28 @@ class SftpTransferSession:
         entries = await self._sftp.readdir(path)
         return [entry.filename for entry in entries if entry.filename not in (".", "..")]
 
-    async def open_reader(self, path: str) -> Any:
-        return await self._sftp.open(path, "rb")
+    async def open_reader(self, path: str, *, offset: int = 0) -> Any:
+        handle = await self._sftp.open(path, "rb")
+        if offset > 0:
+            await handle.seek(offset)
+        return handle
 
-    async def open_writer(self, path: str) -> Any:
+    async def open_writer(self, path: str, *, offset: int = 0, truncate: bool = False) -> Any:
+        # Legacy default stays 'wb' (create/overwrite): the relay writes fresh
+        # partial files. Resume at a byte offset opens 'r+b' — never truncates;
+        # a missing file fails loudly instead of silently restarting.
+        if offset > 0:
+            handle = await self._sftp.open(path, "r+b")
+            await handle.seek(offset)
+            return handle
         return await self._sftp.open(path, "wb")
+
+    async def set_mtime(self, path: str, mtime_s: int) -> None:
+        # Failures propagate: the caller decides whether mtime is best-effort.
+        # SFTPv3 encodes ACMODTIME as an atime+mtime PAIR: passing mtime alone
+        # drops the whole field group and setstat silently no-ops (field-
+        # verified on OpenSSH sftp-server). One value goes to both fields.
+        await self._sftp.setstat(path, asyncssh.SFTPAttrs(atime=mtime_s, mtime=mtime_s))
 
     async def rename(self, source: str, target: str) -> None:
         """Replace the destination atomically when possible.
@@ -321,10 +362,8 @@ class SftpTransferSession:
         try:
             await self._sftp.posix_rename(source, target)
         except (AttributeError, SFTPError):
-            try:
+            with contextlib.suppress(*_MISSING_SFTP):
                 await self._sftp.remove(target)
-            except _MISSING_SFTP:
-                pass
             await self._sftp.rename(source, target)
 
     async def remove(self, path: str) -> None:
@@ -344,12 +383,17 @@ class LongCommandSession:
     """LongCommandRunner over a dedicated asyncssh connection.
 
     Streams stdout through a callback so the rsync progress parser reads live
-    lines. Cancellation closes the channel immediately.
+    lines. Cancellation semantics: ``cancel()`` sets the flag AND closes the
+    channel immediately; ``run()`` observes the flag at its 0.5s poll and
+    raises ``asyncio.CancelledError`` within at most one poll interval. The
+    closed channel makes the remote sshd terminate the rsync process, while
+    rsync's ``--partial-dir`` preserves the local partial for a later resume.
     """
 
     def __init__(self, connection: RemoteConnection, settings: Settings) -> None:
         self._conn = connection
         self._cancelled = False
+        self._process: Any | None = None
 
     async def run(
         self,
@@ -361,6 +405,7 @@ class LongCommandSession:
         import asyncio
 
         async with self._conn.create_process(command) as process:
+            self._process = process
 
             async def _reader() -> None:
                 while True:
@@ -377,6 +422,10 @@ class LongCommandSession:
                     if self._cancelled:
                         raise asyncio.CancelledError
                     _done, _pending = await asyncio.wait({reader}, timeout=0.5)
+                    # Re-check AFTER the wait: cancel() must be observed within
+                    # one poll interval even when the reader just hit EOF.
+                    if self._cancelled:
+                        raise asyncio.CancelledError
                     if reader.done():
                         break
                     if asyncio.get_event_loop().time() > deadline:
@@ -388,11 +437,18 @@ class LongCommandSession:
                 self._cancelled = True
                 raise
             finally:
+                self._process = None
                 if not reader.done():
                     reader.cancel()
 
     async def cancel(self) -> None:
+        # Closing the channel kills the remote process (sshd side) right away
+        # instead of waiting for the next poll tick.
         self._cancelled = True
+        process = self._process
+        if process is not None:
+            with contextlib.suppress(Exception):
+                process.close()
 
     async def close(self) -> None:
         with contextlib.suppress(Exception):

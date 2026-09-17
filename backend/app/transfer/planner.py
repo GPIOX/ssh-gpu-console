@@ -1,12 +1,14 @@
 """Transfer planning: DIRECT_RSYNC preflight + AUTO fallback (Sol contract).
 
 Direct rsync is selected only when EVERY condition holds: rsync on both ends,
-strict non-interactive source→target SSH (BatchMode), no credential copying.
-Any preflight failure falls back to Local Relay without failing the transfer.
+strict non-interactive source→target SSH (BatchMode + StrictHostKeyChecking=yes,
+never writing to known_hosts), no credential copying. Any preflight failure
+falls back to Local Relay without failing the transfer.
 """
 
 from __future__ import annotations
 
+import posixpath
 import re
 import shlex
 from typing import TYPE_CHECKING
@@ -21,6 +23,7 @@ if TYPE_CHECKING:
 
 _RSYNC_CHECK = "command -v rsync"
 _PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)%")
+_DEFAULT_PROBE_TIMEOUT_S = 15.0
 
 
 def build_rsync_command(
@@ -32,21 +35,28 @@ def build_rsync_command(
 ) -> str:
     """Fixed-flag rsync command with safely quoted arguments (no user flags).
 
-    Resume via --partial/--partial-dir; never --delete; never --append.
+    Flags are deliberately explicit: `-l` copies symlinks AS links (never
+    follows them — matches the relay's "never escape the transfer root"
+    policy) and `--safe-links` makes the receiver refuse absolute or
+    parent-escaping links; `-t` keeps mtimes for later incremental syncs.
+    Owner/group/device preservation (-a/-o/-g) is dropped: unprivileged
+    users would fail. Resume via --partial/--partial-dir; never --delete;
+    never --append/--append-verify. The target port travels ONLY via the
+    `-e` ssh options; the remote spec never embeds a port (rsync would
+    treat everything after the first colon as path).
     Exclusion patterns travel as --exclude=arg (full rsync semantics; the
     transfer root itself is never excluded by rsync).
     """
-    ssh_opts = "ssh -o BatchMode=yes -o ConnectTimeout=8"
+    ssh_opts = "ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes"
     if target_port:
         ssh_opts += f" -p {int(target_port)}"
     parts = [
         "rsync",
-        "-a",
         "-r",
+        "-l",
         "-t",
         "-p",
-        "-o",
-        "-g",
+        "--safe-links",
         "--partial",
         "--partial-dir=.sgc-rsync-partial",
         "--info=progress2",
@@ -69,14 +79,16 @@ def _exclude_args(excludes: list[str] | tuple[str, ...]) -> list[str]:
     return args
 
 
-def target_rsync_spec(
-    *, host: str, port: int | None, username: str | None, target_path: str
-) -> str:
-    """user@host:port:path spec (bracketed IPv6), quoted once for the shell."""
+def target_rsync_spec(*, host: str, username: str | None, target_path: str) -> str:
+    """user@host:path spec (bracketed IPv6), quoted once for the shell.
+
+    The port NEVER appears here: rsync treats everything after the first
+    colon of a remote spec as path; the port travels only via build_rsync_command's
+    `-e` ssh options.
+    """
     host_part = f"[{host}]" if ":" in host else host
     user_part = f"{username}@" if username else ""
-    port_part = f":{int(port)}" if port and port != 22 else ""
-    spec = f"{user_part}{host_part}{port_part}:{target_path}"
+    spec = f"{user_part}{host_part}:{target_path}"
     return shlex.quote(spec)
 
 
@@ -121,11 +133,14 @@ async def plan_transfer(
     artifact_id: str,
     ssh: SshManager,
     excludes: list[str] | None = None,
+    probe_timeout_s: float = _DEFAULT_PROBE_TIMEOUT_S,
 ) -> TransferPlan:
     """Run the direct-rsync preflight and select the strategy.
 
     Never raises for preflight failures — they produce a plan with relay
     availability and a reason; strategy selection follows AUTO rules.
+    Bounded disk probes (source size, target free) run alongside; a probe
+    failure leaves the plan field as None and never blocks planning.
     """
 
     plan = TransferPlan(
@@ -137,6 +152,18 @@ async def plan_transfer(
         strategy_requested=requested,
         excludes=list(excludes or ()),
     )
+
+    plan.source_size_b = await _probe_source_size(source_executor, source_path, probe_timeout_s)
+    plan.target_free_b = await _probe_target_free(target_executor, target_path, probe_timeout_s)
+    if (
+        plan.source_size_b is not None
+        and plan.target_free_b is not None
+        and plan.target_free_b < plan.source_size_b
+    ):
+        plan.space_warning = (
+            f"target may be insufficient: need {plan.source_size_b} B,"
+            f" only {plan.target_free_b} B free"
+        )
 
     rsync_source = await _rsync_present(source_executor)
     rsync_target = await _rsync_present(target_executor)
@@ -190,15 +217,66 @@ async def _rsync_present(executor: ExecutorLike) -> bool:
         return False
 
 
+async def _probe_source_size(
+    executor: ExecutorLike, source_path: str, timeout_s: float
+) -> int | None:
+    """Apparent source size in bytes, one bounded round trip.
+
+    Directories go through `du -sb`, single files through `stat -c %s`
+    (dispatched remotely in one shell command to keep the preflight bounded);
+    any failure, timeout, or unparseable output yields None — a probe guess
+    must never block or fail a transfer.
+    """
+    quoted = shlex.quote(source_path)
+    command = f"if [ -d {quoted} ]; then du -sb -- {quoted}; else stat -c %s -- {quoted}; fi"
+    try:
+        result = await executor.run(command, timeout_s=timeout_s)
+        if result.exit_code != 0:
+            return None
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        if not lines:
+            return None
+        value = int(lines[-1].split()[0])
+        return value if value >= 0 else None
+    except Exception:
+        return None
+
+
+async def _probe_target_free(
+    executor: ExecutorLike, target_path: str, timeout_s: float
+) -> int | None:
+    """Free bytes on the filesystem holding the target's parent directory.
+
+    `df -B1 --output=avail` last line; failure of any kind yields None.
+    """
+    parent = posixpath.dirname(target_path) or "."
+    command = f"df -B1 --output=avail -- {shlex.quote(parent)}"
+    try:
+        result = await executor.run(command, timeout_s=timeout_s)
+        if result.exit_code != 0:
+            return None
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not lines:
+            return None
+        return int(lines[-1].split()[-1])
+    except Exception:
+        return None
+
+
 async def _batch_mode_probe(
     session: LongCommandSession, host: str, port: int | None, username: str | None
 ) -> bool:
-    """Strict non-interactive SSH test: no prompts, short timeout."""
+    """Strict non-interactive SSH test: no prompts, short timeout.
+
+    StrictHostKeyChecking=yes never writes to the source server's
+    known_hosts (SAFE-BY-DESIGN): an untrusted target fails the probe,
+    DIRECT_RSYNC stays unavailable and AUTO falls back to LOCAL_RELAY.
+    """
 
     user_part = f"{username}@" if username else ""
     command = (
         f"ssh -o BatchMode=yes -o ConnectTimeout=8"
-        f" -o StrictHostKeyChecking=accept-new -p {int(port or 22)}"
+        f" -o StrictHostKeyChecking=yes -p {int(port or 22)}"
         f" {shlex.quote(f'{user_part}{host}')} true"
     )
     try:

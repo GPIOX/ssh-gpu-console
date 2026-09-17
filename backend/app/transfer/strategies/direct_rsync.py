@@ -7,16 +7,18 @@ the planner's builder; progress comes from --info=progress2 output lines.
 
 from __future__ import annotations
 
-import asyncio
+from typing import TYPE_CHECKING
 
 from app.models.server import ServerRecord
 from app.models.transfer import TransferJob
-from app.ssh.manager import SshManager
 from app.transfer.planner import build_rsync_command, target_rsync_spec
 
+# Single CancelRequested definition lives in local_relay; re-exported here so
+# rsync-path consumers keep one import surface.
+from app.transfer.strategies.local_relay import CancelRequested as CancelRequested
 
-class CancelRequested(Exception):
-    """Raised when the user cancels a running rsync."""
+if TYPE_CHECKING:
+    from app.ssh.manager import SshManager
 
 
 async def rsync_transfer(
@@ -30,12 +32,14 @@ async def rsync_transfer(
     """Run rsync from the source server; returns its exit code.
 
     Mutates job: strategy_used, bytes/progress via --info=progress2 parsing.
-    Raises CancelRequested on user cancel; transport errors propagate.
+    Transport errors propagate; user cancellation is decided by the service
+    racing this command against its cancel event. The dedicated command
+    session is closed on every exit path; a cancelled run leaves the
+    remote-side --partial-dir partial in place.
     """
     target_params = ssh.resolve_params_for(target_server)
     spec = target_rsync_spec(
         host=target_params.host,
-        port=target_params.port,
         username=target_params.username,
         target_path=job.target_path,
     )
@@ -58,7 +62,6 @@ async def rsync_transfer(
             job.bytes_done = job.bytes_total
 
     try:
-        exit_code = await session.run(command, timeout_s=3600.0, on_stdout=_on_stdout)
-        return exit_code
-    except asyncio.CancelledError:
-        raise
+        return await session.run(command, timeout_s=3600.0, on_stdout=_on_stdout)
+    finally:
+        await session.close()

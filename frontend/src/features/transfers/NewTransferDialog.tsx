@@ -4,16 +4,19 @@
  * + name:version until the user edits it) → method (自动/直接同步/本机中转,
  * default 自动). Every field change debounce-posts /transfers/plan and shows
  * per-method availability + reason — planning is an explicit SSH preflight,
- * so it only runs on deliberate, complete input.
+ * so it only runs on deliberate, complete input. The preview also surfaces the
+ * preflight's space warning (or, quietly, the target's free space) and the
+ * effective project excludes.
  */
 
 import { useEffect, useRef, useState } from "react";
 import { Button, Chip, Dialog, Field, Select, TextInput } from "../../design";
-import { useT } from "../../i18n";
+import { tf, useT } from "../../i18n";
 import { useConsoleStore } from "../../store/consoleStore";
 import { useTransferStore } from "../../store/transferStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { transfersApi } from "../../services/transfersApi";
+import { formatBytes } from "../../utils/format";
 import type {
   TransferPlan,
   TransferRequest,
@@ -338,6 +341,13 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
                   </Chip>
                 </div>
                 {plan.reason !== "" && <p className="tf-plan__reason mono">{plan.reason}</p>}
+                {plan.space_warning !== "" ? (
+                  <p className="tf-plan__space-warning">{plan.space_warning}</p>
+                ) : plan.target_free_b !== null ? (
+                  <p className="tf-plan__free mono">
+                    {tf(t.transfers.targetFree, { size: formatBytes(plan.target_free_b) })}
+                  </p>
+                ) : null}
                 {plan.excludes.length > 0 && (
                   <div className="tf-plan__excludes">
                     <span className="tf-plan__reason">{t.transfers.planExcludes}</span>

@@ -57,6 +57,10 @@ function numOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function finiteOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 function strList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
@@ -102,6 +106,12 @@ export function normalizeTransferJob(raw: unknown): TransferJob | null {
     strategy_used: raw.strategy_used === null ? null : transferStrategy(raw.strategy_used, "auto"),
     state: transferState(raw.state),
     excludes: strList(raw.excludes),
+    immutable: raw.immutable === true,
+    strategy_reason: typeof raw.strategy_reason === "string" ? raw.strategy_reason : "",
+    resumed_bytes: finiteOrZero(raw.resumed_bytes),
+    files_skipped: finiteOrZero(raw.files_skipped),
+    bytes_skipped: finiteOrZero(raw.bytes_skipped),
+    warnings: strList(raw.warnings),
     bytes_total: intOrNull(raw.bytes_total),
     bytes_done: typeof raw.bytes_done === "number" && Number.isFinite(raw.bytes_done) ? raw.bytes_done : 0,
     files_total: intOrNull(raw.files_total),
@@ -146,6 +156,8 @@ export function normalizeTransferPlan(raw: unknown): TransferPlan | null {
     excludes: strList(raw.excludes),
     source_exists: typeof raw.source_exists === "boolean" ? raw.source_exists : null,
     source_size_b: intOrNull(raw.source_size_b),
+    target_free_b: intOrNull(raw.target_free_b),
+    space_warning: typeof raw.space_warning === "string" ? raw.space_warning : "",
   };
 }
 
