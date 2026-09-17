@@ -28,6 +28,7 @@ from app.persistence.json_store import JsonFileStore
 from app.servers.registry import ServerRegistry, set_default_registry
 from app.ssh.executor import RemoteCommandResult
 from app.telemetry.service import TelemetryService
+from app.workspace.distribution import DistributionService, ServerUnavailableError
 from app.workspace.repository import WorkspaceRepository
 from app.workspace.service import WorkspaceService
 from fastapi.testclient import TestClient
@@ -242,16 +243,30 @@ class Harness:
     def _names(self) -> set[str]:
         return {server.display_name for server in self.registry.all()}
 
+    def _executor_for(self, server_id: str) -> FakeExecutor:
+        """DistributionService factory double: unknown servers raise, like the
+        production factory; known servers get an (empty-output) fake executor."""
+        if server_id not in self._names() and server_id not in self._ids():
+            raise ServerUnavailableError("server is unknown, deleted or disabled")
+        return FakeExecutor()
+
     def _context(self) -> AppContext:
         async def factory(_sid: str, _record: Any) -> FakeExecutor:
             return FakeExecutor()
 
         telemetry = TelemetryService(self.settings, self.registry, factory)
+        distribution = DistributionService(
+            self.settings,
+            self.workspace,
+            executor_for=self._executor_for,
+            active_transfers=lambda: [],
+        )
         return AppContext(
             self.settings,
             ssh=FakeSsh(),  # type: ignore[arg-type]
             telemetry=telemetry,
             workspace=self.workspace,
+            distribution=distribution,
         )
 
 

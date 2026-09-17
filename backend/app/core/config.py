@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # History
     history_points: int = 300
 
+    # Explicit workspace inspection (user-triggered only, never background)
+    project_inspection_concurrency: int = Field(default=4, ge=1, le=16)
+
     # Transfers (isolated from telemetry concurrency)
     max_transfers_global: int = Field(default=2, ge=1, le=16)
     max_transfers_per_server: int = Field(default=1, ge=1, le=8)

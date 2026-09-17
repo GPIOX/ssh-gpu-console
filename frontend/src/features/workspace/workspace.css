@@ -175,8 +175,19 @@
 
 .ws-actions-inline {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 8px;
   padding-bottom: 8px;
+}
+
+.ws-actions-inline__spacer {
+  flex: 1;
+}
+
+.ws-sync-progress {
+  font-size: 12px;
+  color: var(--accent);
 }
 
 /* -- distribution matrix ----------------------------------------------------- */
@@ -219,19 +230,142 @@
   gap: 8px;
 }
 
-.ws-matrix__present {
-  color: var(--healthy);
-  font-weight: 700;
-  font-size: 15px;
+/* Matrix state marks: ✓ verified / ○ declared / — missing / ! unavailable /
+   ↻ syncing, plus the weak dash for cells without a declared placement. */
+.ws-matrix__mark {
   display: inline-block;
   min-width: 18px;
   text-align: center;
-}
-
-.ws-matrix__missing {
-  color: var(--text-2);
   font-size: 14px;
   font-weight: 700;
+  color: var(--text-2);
+}
+
+.ws-matrix__cell--verified .ws-matrix__mark {
+  color: var(--healthy);
+  font-size: 15px;
+}
+
+.ws-matrix__cell--declared .ws-matrix__mark {
+  color: var(--text-3);
+}
+
+.ws-matrix__cell--missing .ws-matrix__mark {
+  color: var(--text-2);
+}
+
+.ws-matrix__cell--unavailable .ws-matrix__mark {
+  color: var(--warning);
+}
+
+.ws-matrix__cell--syncing .ws-matrix__mark {
+  color: var(--accent);
+}
+
+/* -- sync dialog ------------------------------------------------------------- */
+
+.ws-sync__scroll {
+  overflow-x: auto;
+}
+
+.ws-sync__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.ws-sync__table th {
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.ws-sync__table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.ws-sync__table tr:last-child td {
+  border-bottom: none;
+}
+
+.ws-sync__artifact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ws-sync__artifact-label {
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.ws-sync__toggle {
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.ws-sync__toggle:hover {
+  color: var(--text-1);
+}
+
+.ws-sync__status {
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.ws-sync__action {
+  min-width: 120px;
+}
+
+.ws-sync__reason {
+  margin-top: 4px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--warning);
+}
+
+.ws-sync__detail td {
+  background: var(--surface-2);
+}
+
+.ws-sync__flow {
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+.ws-sync__fact {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.ws-sync__warning {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.ws-sync__busy {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ws-sync__hint {
+  font-size: 12px;
+  color: var(--warning);
 }
 
 /* -- placements --------------------------------------------------------------- */

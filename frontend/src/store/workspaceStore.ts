@@ -1,12 +1,16 @@
 /**
  * Workspace catalog store (Phase 1): projects / artifacts / placements /
- * launch configs lists, per-server roots cache, and RAM-only placement
- * inspections. REST only — loads happen on demand (page open, tab refresh,
- * after mutations); there is deliberately NO polling and NO persistence.
+ * launch configs lists, per-server roots cache, RAM-only placement
+ * inspections, and the Phase 4E per-project distribution cache with the
+ * inspect / sync-plan / sync actions. REST only — loads happen on demand
+ * (page open, tab refresh, after mutations); there is deliberately NO polling
+ * and NO persistence. Distribution GETs never trigger SSH; inspect/sync-plan/
+ * sync are explicit user actions.
  */
 
 import { create } from "zustand";
 import { workspaceApi } from "../services/workspaceApi";
+import type { TransferBatch } from "../types/transfers";
 import type {
   ArtifactCreate,
   ArtifactPatch,
@@ -19,10 +23,13 @@ import type {
   PlacementPatch,
   PlacementRecord,
   ProjectCreate,
+  ProjectDistribution,
   ProjectPatch,
   ProjectRecord,
+  ProjectSyncPlan,
   ServerRoots,
   ServerRootsUpdate,
+  SyncPlanRequest,
 } from "../types/workspace";
 
 export interface WorkspaceState {
@@ -46,6 +53,20 @@ export interface WorkspaceState {
   inspections: Record<string, PlacementInspection>;
   inspecting: Record<string, boolean>;
   inspectErrors: Record<string, string>;
+  /** Phase 4E: distribution snapshots cached per project id (GET only). */
+  distributions: Record<string, ProjectDistribution>;
+  distributionLoading: Record<string, boolean>;
+  distributionErrors: Record<string, string>;
+  /** Explicit project-wide inspect (SSH); keyed by project id. */
+  projectInspecting: Record<string, boolean>;
+  projectInspectErrors: Record<string, string>;
+  /** Sync plan for the one open SyncDialog; null until a target is chosen. */
+  syncPlan: ProjectSyncPlan | null;
+  syncPlanLoading: boolean;
+  syncPlanError: string | null;
+  /** While POST /sync is in flight. */
+  syncRunning: boolean;
+  syncError: string | null;
 
   loadWorkspace: () => Promise<void>;
   loadProjects: () => Promise<void>;
@@ -75,6 +96,16 @@ export interface WorkspaceState {
 
   inspectPlacement: (placementId: string) => Promise<PlacementInspection>;
   saveServerRoots: (serverId: string, update: ServerRootsUpdate) => Promise<ServerRoots>;
+
+  /** Read-only distribution fetch (no SSH); caches per project. */
+  fetchDistribution: (projectId: string) => Promise<void>;
+  /** Explicit SSH check; replaces the cached distribution with the response. */
+  inspectProject: (projectId: string) => Promise<ProjectDistribution>;
+  buildSyncPlan: (projectId: string, body: SyncPlanRequest) => Promise<ProjectSyncPlan>;
+  /** Executes the sync; throws ApiError (409 message verbatim) on refusal. */
+  syncProject: (projectId: string, body: SyncPlanRequest) => Promise<TransferBatch>;
+  /** Clears plan/run state when the SyncDialog closes. */
+  resetSyncPlan: () => void;
 }
 
 function errorMessage(cause: unknown): string {
@@ -101,6 +132,16 @@ export const createWorkspaceStore = () =>
     inspections: {},
     inspecting: {},
     inspectErrors: {},
+    distributions: {},
+    distributionLoading: {},
+    distributionErrors: {},
+    projectInspecting: {},
+    projectInspectErrors: {},
+    syncPlan: null,
+    syncPlanLoading: false,
+    syncPlanError: null,
+    syncRunning: false,
+    syncError: null,
 
     loadWorkspace: async () => {
       await Promise.all([
@@ -187,8 +228,11 @@ export const createWorkspaceStore = () =>
     deleteProject: async (projectId) => {
       await workspaceApi.deleteProject(projectId);
       const project = get().projects.find((p) => p.project_id === projectId);
+      const distributions = { ...get().distributions };
+      delete distributions[projectId];
       set({
         projects: get().projects.filter((p) => p.project_id !== projectId),
+        distributions,
         // Project deletion cascades its launch configs server-side.
         launchConfigs: get().launchConfigs.filter(
           (config) =>
@@ -299,6 +343,82 @@ export const createWorkspaceStore = () =>
       const roots = await workspaceApi.putServerRoots(serverId, update);
       set({ serverRoots: { ...get().serverRoots, [serverId]: roots } });
       return roots;
+    },
+
+    fetchDistribution: async (projectId) => {
+      set({
+        distributionLoading: { ...get().distributionLoading, [projectId]: true },
+        distributionErrors: { ...get().distributionErrors, [projectId]: "" },
+      });
+      try {
+        const distribution = await workspaceApi.getProjectDistribution(projectId);
+        set({
+          distributions: { ...get().distributions, [projectId]: distribution },
+          distributionLoading: { ...get().distributionLoading, [projectId]: false },
+        });
+      } catch (cause) {
+        set({
+          distributionErrors: {
+            ...get().distributionErrors,
+            [projectId]: errorMessage(cause),
+          },
+          distributionLoading: { ...get().distributionLoading, [projectId]: false },
+        });
+      }
+    },
+
+    inspectProject: async (projectId) => {
+      set({
+        projectInspecting: { ...get().projectInspecting, [projectId]: true },
+        projectInspectErrors: { ...get().projectInspectErrors, [projectId]: "" },
+      });
+      try {
+        const distribution = await workspaceApi.inspectProject(projectId);
+        set({
+          distributions: { ...get().distributions, [projectId]: distribution },
+          projectInspecting: { ...get().projectInspecting, [projectId]: false },
+        });
+        return distribution;
+      } catch (cause) {
+        set({
+          projectInspectErrors: {
+            ...get().projectInspectErrors,
+            [projectId]: errorMessage(cause),
+          },
+          projectInspecting: { ...get().projectInspecting, [projectId]: false },
+        });
+        throw cause;
+      }
+    },
+
+    buildSyncPlan: async (projectId, body) => {
+      // Drop the previous plan immediately: a stale plan for another target
+      // server must never be confirmable while the new one loads.
+      set({ syncPlan: null, syncPlanLoading: true, syncPlanError: null });
+      try {
+        const plan = await workspaceApi.buildSyncPlan(projectId, body);
+        set({ syncPlan: plan, syncPlanLoading: false });
+        return plan;
+      } catch (cause) {
+        set({ syncPlanError: errorMessage(cause), syncPlanLoading: false });
+        throw cause;
+      }
+    },
+
+    syncProject: async (projectId, body) => {
+      set({ syncRunning: true, syncError: null });
+      try {
+        const batch = await workspaceApi.syncProject(projectId, body);
+        set({ syncRunning: false });
+        return batch;
+      } catch (cause) {
+        set({ syncRunning: false, syncError: errorMessage(cause) });
+        throw cause;
+      }
+    },
+
+    resetSyncPlan: () => {
+      set({ syncPlan: null, syncPlanError: null, syncError: null });
     },
   }));
 

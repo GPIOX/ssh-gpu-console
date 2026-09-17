@@ -1,6 +1,7 @@
 # Workspace Management & Cross-server Transfer — Design Contract (v3)
 
-Status: active contract for the Workspace (Phase 1) and Transfer (Phase 2) features.
+Status: active contract for the Workspace (Phase 1) and Transfer (Phases 2–3) features;
+Phase 4 (project distribution & reconciliation) is in progress (§8).
 Architecture ownership unchanged: module boundaries, wire models, sampling/persistence
 boundaries and acceptance are maintainer-owned; scoped changes only.
 
@@ -13,6 +14,12 @@ auto planner).
 NOT in this phase: tmux training launch, experiment tracking, docker sync, deployment,
 remote terminal, alerts, remote agents, telemetry persistence, auto-deployment, mirror
 sync, destructive remote deletes, scp as core transport.
+
+Phase 3 ADDED (this document is current with it): resumable relay transfers
+(deterministic partial + meta sidecar), incremental sync (skip up-to-date files,
+preserve source mtimes), symlink-safe tree walks with bounded warnings, a per-target
+write lock, a hard transfer-space preflight, rsync flag/cancel hardening, and richer
+job bookkeeping fields (§7).
 
 ## 2. Data model
 
@@ -72,7 +79,8 @@ Inspect runs an explicit SSH check (exists / type / size / basic file count) onl
 request; results live in RAM.
 
 Transfers: `GET /transfers`, `GET /transfers/{job_id}`, `POST /transfers/plan`,
-`POST /transfers`, `POST /transfers/{id}/cancel`, `POST /transfers/{id}/retry`.
+`POST /transfers`, `POST /transfers/{id}/cancel`, `POST /transfers/{id}/retry`,
+`DELETE /transfers` (clears the bounded terminal-state history; active jobs are kept).
 Listing reads RAM only and never triggers SSH. Frontend polls (~1 Hz) only while a job is
 queued/planning/running/verifying.
 
@@ -84,21 +92,40 @@ queued/planning/running/verifying.
   dataset transfer; they still reuse server auth/config/host-key policy/agent/trust rules;
   no private keys copied, no host-key checking disabled, no agent forwarding by default;
 - only `app/ssh/transport.py` imports asyncssh; `app/ssh/file_transfer.py` defines the
-  transport-neutral `TransferSession` protocol (stat/mkdir/open_reader/open_writer/rename/
-  remove/close); `app/transfer/*` never imports asyncssh;
+  transport-neutral `TransferSession` protocol (stat / lstat / listdir / mkdir /
+  open_reader(offset) / open_writer(offset, truncate) / set_mtime / rename / remove /
+  close) and the `FileStat` record (size_b, is_symlink, mtime_s — SFTPv3 exposes mtime
+  only in whole seconds); `app/transfer/*` never imports asyncssh;
 - all paths/hosts in generated commands pass a dedicated safe-quoting builder; user
   supplied rsync flags are forbidden; flags are fixed backend-side;
-- rsync: `--partial --partial-dir=.sgc-rsync-partial` for resume, NEVER `--delete`, no
-  `--append` by default; direct mode requires non-interactive (BatchMode) source→target SSH
-  and rsync on both ends — preflight failure falls back to Local Relay (auto), never fails
-  the transfer for lack of direct routing, and never copies credentials to make it work;
+- rsync flags are exactly `-r -l -t -p --safe-links --partial --partial-dir=.sgc-rsync-partial
+  --info=progress2` (no `-a`/`-o`/`-g`: owner/group preservation would fail for
+  unprivileged users; `-l` copies symlinks AS links, `--safe-links` makes the receiver
+  refuse absolute or parent-escaping targets, `-t` keeps mtimes for later incremental
+  syncs). The target port travels ONLY via `-e "ssh -p PORT"`; the remote spec never
+  embeds a port (rsync treats everything after the first colon of a remote spec as path).
+  Both the BatchMode probe and the `-e` ssh options use `-o StrictHostKeyChecking=yes`
+  (never `accept-new`, never writes to the source's known_hosts — an untrusted target
+  just fails the probe). `--delete` and `--append`/`--append-verify` are NEVER sent.
+  Direct mode still requires non-interactive (BatchMode) source→target SSH and rsync on
+  both ends — preflight failure falls back to Local Relay (auto), never fails the
+  transfer for lack of direct routing, and never copies credentials to make it work;
+- rsync cancellation is a real race, not a flag: the service runs the remote command
+  against the job's cancel event; when cancel wins, the command session is closed so the
+  remote sshd terminates rsync immediately, and `--partial-dir` preserves the remote
+  partial for a later resume;
+- target write lock: the job registry allows at most ONE active job per
+  (target_server_id, normalized target_path); a second job targeting the same path is
+  rejected with 409 until the holder reaches a terminal state (the relay's shared
+  partial/meta scratch depends on this — two concurrent writers would corrupt it);
 - Local Relay: SFTP chunked copy through a bounded RAM buffer (`transfer_chunk_size_b`,
   default 4 MiB), NO local staging file; copy/update semantics (no mirror, no remote
-  deletes); partial target files are written as `.<name>.sgc-partial-<job_id>` then renamed;
-  symlinks are skipped (no path escape); quick verification = size / transferred bytes /
-  basic file count (no full-dataset hashing in this phase);
+  deletes); the partial/meta/resume/incremental/symlink contract is §7;
+- quick verification is size/count parity only — NO full-dataset hashing in any phase;
+  details in §7;
 - state machine: queued → planning → running → verifying → completed | failed | cancelled;
-  retry re-queues; completed/failed history bounded (`transfer_job_history=100`);
+  retry re-queues the finished job's parameters as a NEW job; completed/failed/cancelled
+  history bounded (`transfer_job_history=100`);
 - transfer excludes: `ProjectRecord.transfer_excludes` (≤32 single-line rsync/fnmatch
   patterns, editable in the UI and PATCHable) is the project-level DEFAULT; the effective
   list for a job is the UNION over the projects referencing the artifact (the copy can
@@ -106,3 +133,57 @@ queued/planning/running/verifying.
   the transfer root itself is never excluded); the relay matches entry NAMES during the
   walk (`fnmatch`, dot entries `.`/`..` are always filtered); the effective list is shown
   in the plan preview and carried on the job (`TransferPlan.excludes`/`TransferJob.excludes`).
+
+## 7. Relay resume, incremental sync & job bookkeeping (Phase 3 contract)
+
+- deterministic scratch names: every relayed file is staged on the target as
+  `<dir>/.<name>.sgc-partial` — NO job_id in the name, so the partial written by one job
+  is reusable by whichever later job wins the same target lock — with a JSON meta sidecar
+  `<dir>/.<name>.sgc-meta` written (truncate) BEFORE the first byte. The sidecar carries
+  exactly five keys: `artifact_id`, `source_path`, `target_path`, `source_size_b`,
+  `source_mtime_s`;
+- success consumes the scratch: the partial is renamed onto the target name, then the
+  meta sidecar is removed. Cancel/failure keeps BOTH files in place for a later retry;
+- resume validation (ONE set of rules for code and for dataset/model — there is no
+  "safe to stitch" class): the partial is appended to ONLY when the meta matches THIS
+  transfer on all five keys — including the CURRENT source size+mtime — and
+  0 < partial size ≤ source size. A changed source, code or dataset, is always
+  retransferred from zero, never stitched onto stale bytes. Because the names are
+  deterministic and the sidecar lives on the target, a NEW job — including after a
+  backend restart, with no in-RAM job state — resumes directly from the leftovers;
+- incremental sync: a target file whose size AND mtime equal the source is skipped
+  without reading the source and counted in `files_skipped`/`bytes_skipped` (unknown
+  mtime, i.e. 0, never skips). After a successful rename the source mtime is preserved
+  via `set_mtime`; SFTPv3 encodes ACMODTIME as an atime+mtime PAIR, so one value is
+  written to both fields — passing mtime alone silently no-ops (field-verified on
+  OpenSSH sftp-server). set_mtime failures are suppressed (best-effort metadata);
+- lstat/symlink safety: directory walks use lstat and NEVER follow or copy symlinks
+  found inside the tree — each is skipped and recorded in `warnings` (bounded, ≤20
+  entries). A single-file ROOT is stat()ed (follows symlinks): the root is user
+  declared, so the content it points at is what transfers;
+- space preflight: the plan carries `source_size_b` (`du -sb` for directories,
+  `stat -c %s` for files), `target_free_b` (`df -B1` on the target's parent directory)
+  and a `space_warning` for the plan preview. At run time, clearly insufficient space
+  AND a missing target → job FAILED (`insufficient_space`); an existing target → warning
+  only (incremental data may need less); any probe failure never blocks the job;
+- job bookkeeping fields (RAM-only, defaulted so existing constructors keep working):
+  `immutable` (dataset/model roots must not be mutated by a later copy; code may; an
+  explicit per-artifact override wins), `strategy_reason` (plan reason for job detail
+  views), `resumed_bytes` (bytes taken over from an existing partial), `files_skipped`
+  / `bytes_skipped` (incremental-sync skips), `warnings` (bounded list, e.g. skipped
+  symlink reasons);
+- quick verify (no SHA256 in this phase): single file = target size parity with the
+  source (and non-empty); directories = the job's own counters when files AND bytes were
+  fully tracked, otherwise a re-walk of the source requiring every currently-existing
+  source file to exist at the mirrored target path with a matching size (a source file
+  that changed size after being copied fails on purpose). Extra target files —
+  pre-existing files or `.sgc-partial` residue — never fail verification (copy/update
+  semantics).
+
+## 8. Phase status
+
+- Phase 1 (workspace catalog & placement inspection) — complete.
+- Phase 2 (transfer MVP: local relay + direct rsync + auto planner) — complete.
+- Phase 3 (resume, incremental sync, symlink/target-lock/space/rsync hardening) —
+  complete.
+- Phase 4 (project distribution & reconciliation) — in progress.

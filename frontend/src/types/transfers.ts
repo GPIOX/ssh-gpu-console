@@ -126,3 +126,36 @@ export interface TransferPrefill {
   artifactId?: string;
   sourcePlacementId?: string;
 }
+
+/** Phase 4E: grouping record for the jobs one project sync created (RAM only). */
+export type TransferBatchState =
+  | "queued"
+  | "running"
+  | "completed"
+  | "partial_failed"
+  | "failed"
+  | "cancelled";
+
+export interface TransferBatch {
+  batch_id: string;
+  project_id: string;
+  target_server_id: string;
+  job_ids: string[];
+  created_at: string;
+  state: TransferBatchState;
+  total_jobs: number;
+  queued_jobs: number;
+  running_jobs: number;
+  completed_jobs: number;
+  failed_jobs: number;
+  cancelled_jobs: number;
+}
+
+/** States the frontend must poll for while any batch is in one. */
+export function isActiveBatchState(state: TransferBatchState): boolean {
+  return state === "queued" || state === "running";
+}
+
+export function isTerminalBatchState(state: TransferBatchState): boolean {
+  return !isActiveBatchState(state);
+}

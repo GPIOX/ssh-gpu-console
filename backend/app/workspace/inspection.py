@@ -20,14 +20,24 @@ from app.models.workspace import (
 
 
 class PlacementInspector:
-    """Runs explicit placement checks over the existing SSH executor."""
+    """Runs explicit placement checks over the existing SSH executor.
 
-    def __init__(self) -> None:
-        self._latest: dict[str, PlacementInspection] = {}
+    The instance owns the observation cache: a shared instance means project
+    and single-placement inspections see the same latest observations. The
+    cache dict is injectable so embedders can seed or share it.
+    """
+
+    def __init__(self, cache: dict[str, PlacementInspection] | None = None) -> None:
+        self._latest: dict[str, PlacementInspection] = cache if cache is not None else {}
         self._lock = asyncio.Lock()
 
     def latest(self, placement_id: str) -> PlacementInspection | None:
         return self._latest.get(placement_id)
+
+    def record(self, inspection: PlacementInspection) -> PlacementInspection:
+        """Store an externally derived observation (e.g. an unavailable server
+        that never reached the executor) in the same cache."""
+        return self._record(inspection.placement_id, inspection)
 
     async def inspect(
         self, executor: ExecutorLike, placement: PlacementRecord

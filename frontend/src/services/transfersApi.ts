@@ -8,6 +8,8 @@
 import { API_BASE, ApiError } from "./api";
 import { isRecord } from "./normalize";
 import type {
+  TransferBatch,
+  TransferBatchState,
   TransferJob,
   TransferPlan,
   TransferRequest,
@@ -36,6 +38,21 @@ const STATES = [
 function transferState(value: unknown): TransferState {
   return typeof value === "string" && (STATES as readonly string[]).includes(value)
     ? (value as TransferState)
+    : "queued";
+}
+
+const BATCH_STATES = [
+  "queued",
+  "running",
+  "completed",
+  "partial_failed",
+  "failed",
+  "cancelled",
+] as const;
+
+function batchState(value: unknown): TransferBatchState {
+  return typeof value === "string" && (BATCH_STATES as readonly string[]).includes(value)
+    ? (value as TransferBatchState)
     : "queued";
 }
 
@@ -161,6 +178,29 @@ export function normalizeTransferPlan(raw: unknown): TransferPlan | null {
   };
 }
 
+/** Phase 4E: batch grouping record; counts derive from real jobs server-side. */
+export function normalizeTransferBatch(raw: unknown): TransferBatch | null {
+  if (!isRecord(raw)) return null;
+  const batchId = str(raw.batch_id);
+  const projectId = str(raw.project_id);
+  const targetServerId = str(raw.target_server_id);
+  if (batchId === null || projectId === null || targetServerId === null) return null;
+  return {
+    batch_id: batchId,
+    project_id: projectId,
+    target_server_id: targetServerId,
+    job_ids: strList(raw.job_ids),
+    created_at: typeof raw.created_at === "string" ? raw.created_at : "",
+    state: batchState(raw.state),
+    total_jobs: finiteOrZero(raw.total_jobs),
+    queued_jobs: finiteOrZero(raw.queued_jobs),
+    running_jobs: finiteOrZero(raw.running_jobs),
+    completed_jobs: finiteOrZero(raw.completed_jobs),
+    failed_jobs: finiteOrZero(raw.failed_jobs),
+    cancelled_jobs: finiteOrZero(raw.cancelled_jobs),
+  };
+}
+
 // -- transport -----------------------------------------------------------------
 
 type Method = "GET" | "POST" | "DELETE";
@@ -266,5 +306,19 @@ export const transfersApi = {
     const cleared = isRecord(raw) ? intOrNull(raw.cleared) : null;
     if (cleared === null) throw invalidPayload("cleared count");
     return cleared;
+  },
+
+  /** RAM-only batch listing (active + archived, newest first); zero SSH. */
+  async listBatches(): Promise<TransferBatch[]> {
+    const raw = await request("/transfer-batches", "GET");
+    if (!Array.isArray(raw)) throw invalidPayload("transfer batches");
+    return raw.map(normalizeTransferBatch).filter((batch): batch is TransferBatch => batch !== null);
+  },
+
+  async getBatch(batchId: string): Promise<TransferBatch> {
+    const raw = await request(`/transfer-batches/${enc(batchId)}`, "GET");
+    const batch = normalizeTransferBatch(raw);
+    if (batch === null) throw invalidPayload("transfer batch");
+    return batch;
   },
 };

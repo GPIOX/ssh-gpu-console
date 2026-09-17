@@ -1,16 +1,23 @@
 /**
- * Transfer Center store (Phase 2): RAM-only job list plus dialog open/prefill
- * state. Polling law (docs/WORKSPACE_SYNC_PLAN.md §5): poll ~1 Hz ONLY while
- * any job is queued/planning/running/verifying; the timer is cleared when no
- * active jobs remain, on manual stop, and is never duplicated — a single
- * shared interval, not per-row timers.
+ * Transfer Center store (Phase 2 + 4E): RAM-only job list, RAM-only batch
+ * list, plus dialog open/prefill state. Polling law (docs/WORKSPACE_SYNC_PLAN.md
+ * §5): poll ~1 Hz ONLY while any job or batch is queued/planning/running/
+ * verifying; the timer is cleared when none remain, on manual stop, and is
+ * never duplicated — a single shared interval, not per-row timers. While
+ * polling, jobs and batches refresh together (a batch is a pure view over its
+ * jobs).
  */
 
 import { create } from "zustand";
 import { transfersApi } from "../services/transfersApi";
 import { TRANSFERS_HASH } from "../shell/routes";
-import type { TransferJob, TransferPrefill, TransferRequest } from "../types/transfers";
-import { isActiveTransferState } from "../types/transfers";
+import type {
+  TransferBatch,
+  TransferJob,
+  TransferPrefill,
+  TransferRequest,
+} from "../types/transfers";
+import { isActiveBatchState, isActiveTransferState } from "../types/transfers";
 
 export const TRANSFER_POLL_MS = 1000;
 
@@ -25,12 +32,18 @@ export interface TransferStateShape {
   error: string | null;
   /** True only while the 1 Hz timer is armed. */
   polling: boolean;
+  /** Phase 4E: batch groups (active + archived, newest first); RAM only. */
+  batches: TransferBatch[];
+  batchesLoading: boolean;
+  batchesError: string | null;
   dialog: TransferDialogState;
 
   loadJobs: () => Promise<void>;
-  /** Arm polling when active jobs exist, clear it otherwise. Idempotent. */
+  /** Arm polling when active jobs or batches exist, clear it otherwise. Idempotent. */
   syncPolling: () => void;
   stopPolling: () => void;
+  /** Read-only batch listing; never triggers SSH. */
+  fetchBatches: () => Promise<void>;
 
   cancelJob: (jobId: string) => Promise<void>;
   retryJob: (jobId: string) => Promise<void>;
@@ -61,8 +74,8 @@ export function createTransferStore() {
 
     const tick = async (): Promise<void> => {
       // Concurrency guard: a slow response must not stack refreshes.
-      if (get().loading) return;
-      await get().loadJobs();
+      if (get().loading || get().batchesLoading) return;
+      await Promise.all([get().loadJobs(), get().fetchBatches()]);
     };
 
     return {
@@ -70,6 +83,9 @@ export function createTransferStore() {
       loading: false,
       error: null,
       polling: false,
+      batches: [],
+      batchesLoading: false,
+      batchesError: null,
       dialog: { open: false, prefill: {} },
 
       loadJobs: async () => {
@@ -83,8 +99,22 @@ export function createTransferStore() {
         }
       },
 
+      fetchBatches: async () => {
+        set({ batchesLoading: true });
+        try {
+          const batches = await transfersApi.listBatches();
+          set({ batches, batchesError: null, batchesLoading: false });
+          get().syncPolling();
+        } catch (cause) {
+          set({ batchesError: errorMessage(cause), batchesLoading: false });
+        }
+      },
+
       syncPolling: () => {
-        const active = get().jobs.some((job) => isActiveTransferState(job.state));
+        const { jobs, batches } = get();
+        const active =
+          jobs.some((job) => isActiveTransferState(job.state)) ||
+          batches.some((batch) => isActiveBatchState(batch.state));
         if (active && timer === null) {
           timer = setInterval(() => void tick(), TRANSFER_POLL_MS);
           set({ polling: true });

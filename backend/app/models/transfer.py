@@ -118,3 +118,37 @@ class TransferJob(BaseModel):
 
     error_code: str | None = None
     error_message: str = ""
+
+
+class TransferBatchState(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    PARTIAL_FAILED = "partial_failed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TransferBatch(BaseModel):
+    """Phase 4D: grouping record for the jobs one project sync created.
+
+    Pure read view: the BatchRegistry stores only (project, target, job_ids)
+    and derives state/counts from the real TransferJobs on every read; it is
+    RAM only and never persisted (a restart forgets batches by design).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    batch_id: str = Field(min_length=1, max_length=64)
+    project_id: str
+    target_server_id: str
+    job_ids: list[str] = Field(default_factory=list)
+    created_at: str = ""
+    state: TransferBatchState = TransferBatchState.QUEUED
+
+    total_jobs: int = Field(default=0, ge=0)
+    queued_jobs: int = Field(default=0, ge=0)
+    running_jobs: int = Field(default=0, ge=0)
+    completed_jobs: int = Field(default=0, ge=0)
+    failed_jobs: int = Field(default=0, ge=0)
+    cancelled_jobs: int = Field(default=0, ge=0)

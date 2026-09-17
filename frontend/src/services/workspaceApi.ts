@@ -8,11 +8,15 @@
 
 import { API_BASE, ApiError } from "./api";
 import { isRecord } from "./normalize";
+import { normalizeTransferBatch } from "./transfersApi";
 import type {
   ArtifactCreate,
   ArtifactKind,
   ArtifactPatch,
   ArtifactRecord,
+  ArtifactSyncItem,
+  DistributionItem,
+  DistributionState,
   InspectionState,
   LaunchConfigCreate,
   LaunchConfigPatch,
@@ -22,11 +26,16 @@ import type {
   PlacementPatch,
   PlacementRecord,
   ProjectCreate,
+  ProjectDistribution,
   ProjectPatch,
   ProjectRecord,
+  ProjectSyncPlan,
   ServerRoots,
   ServerRootsUpdate,
+  SyncAction,
+  SyncPlanRequest,
 } from "../types/workspace";
+import type { TransferBatch, TransferStrategy } from "../types/transfers";
 
 const ARTIFACT_KINDS = ["code", "dataset", "model"] as const;
 
@@ -42,6 +51,32 @@ function inspectionState(value: unknown): InspectionState {
   return typeof value === "string" && (INSPECTION_STATES as readonly string[]).includes(value)
     ? (value as InspectionState)
     : "declared";
+}
+
+const DISTRIBUTION_STATES = ["declared", "verified", "missing", "unavailable", "syncing"] as const;
+
+function distributionState(value: unknown): DistributionState {
+  return typeof value === "string" && (DISTRIBUTION_STATES as readonly string[]).includes(value)
+    ? (value as DistributionState)
+    : "declared";
+}
+
+const SYNC_ACTIONS = ["skip", "transfer", "unresolved"] as const;
+
+function syncAction(value: unknown): SyncAction {
+  // Unknown/absent action degrades to unresolved: the dialog then refuses the
+  // sync instead of guessing a transfer.
+  return typeof value === "string" && (SYNC_ACTIONS as readonly string[]).includes(value)
+    ? (value as SyncAction)
+    : "unresolved";
+}
+
+const STRATEGY_VALUES = ["auto", "direct_rsync", "local_relay"] as const;
+
+function strategyOrNull(value: unknown): TransferStrategy | null {
+  return typeof value === "string" && (STRATEGY_VALUES as readonly string[]).includes(value)
+    ? (value as TransferStrategy)
+    : null;
 }
 
 // -- primitive guards (local: normalize.ts exports only isRecord) ------------
@@ -183,6 +218,84 @@ export function normalizeServerRoots(raw: unknown): ServerRoots {
     dataset_root: optionalStr(raw.dataset_root),
     model_root: optionalStr(raw.model_root),
     output_root: optionalStr(raw.output_root),
+  };
+}
+
+// -- Phase 4E: distribution snapshot + project sync plan -----------------------
+
+export function normalizeDistributionItem(raw: unknown): DistributionItem | null {
+  if (!isRecord(raw)) return null;
+  const artifactId = str(raw.artifact_id);
+  const serverId = str(raw.server_id);
+  const remotePath = str(raw.remote_path);
+  if (artifactId === null || serverId === null || remotePath === null) return null;
+  return {
+    artifact_id: artifactId,
+    artifact_label: typeof raw.artifact_label === "string" ? raw.artifact_label : "",
+    artifact_kind: typeof raw.artifact_kind === "string" ? raw.artifact_kind : "code",
+    server_id: serverId,
+    placement_id: optionalStr(raw.placement_id),
+    remote_path: remotePath,
+    state: distributionState(raw.state),
+    checked_at: optionalStr(raw.checked_at),
+    detail: optionalStr(raw.detail),
+    active_transfer_job_id: optionalStr(raw.active_transfer_job_id),
+  };
+}
+
+export function normalizeProjectDistribution(raw: unknown): ProjectDistribution | null {
+  if (!isRecord(raw)) return null;
+  const projectId = str(raw.project_id);
+  if (projectId === null) return null;
+  return {
+    project_id: projectId,
+    generated_at: typeof raw.generated_at === "string" ? raw.generated_at : "",
+    items: Array.isArray(raw.items)
+      ? raw.items
+          .map(normalizeDistributionItem)
+          .filter((item): item is DistributionItem => item !== null)
+      : [],
+  };
+}
+
+export function normalizeArtifactSyncItem(raw: unknown): ArtifactSyncItem | null {
+  if (!isRecord(raw)) return null;
+  const artifactId = str(raw.artifact_id);
+  if (artifactId === null) return null;
+  return {
+    artifact_id: artifactId,
+    artifact_label: typeof raw.artifact_label === "string" ? raw.artifact_label : "",
+    artifact_kind: typeof raw.artifact_kind === "string" ? raw.artifact_kind : "code",
+    target_status: distributionState(raw.target_status),
+    action: syncAction(raw.action),
+    reason: typeof raw.reason === "string" ? raw.reason : "",
+    source_placement_id: optionalStr(raw.source_placement_id),
+    source_server_id: optionalStr(raw.source_server_id),
+    source_path: optionalStr(raw.source_path),
+    target_path: optionalStr(raw.target_path),
+    strategy_selected: strategyOrNull(raw.strategy_selected),
+    alternatives: strList(raw.alternatives),
+    warnings: strList(raw.warnings),
+  };
+}
+
+export function normalizeProjectSyncPlan(raw: unknown): ProjectSyncPlan | null {
+  if (!isRecord(raw)) return null;
+  const projectId = str(raw.project_id);
+  const targetServerId = str(raw.target_server_id);
+  if (projectId === null || targetServerId === null) return null;
+  return {
+    project_id: projectId,
+    target_server_id: targetServerId,
+    generated_at: typeof raw.generated_at === "string" ? raw.generated_at : "",
+    refresh_code: raw.refresh_code === true,
+    items: Array.isArray(raw.items)
+      ? raw.items
+          .map(normalizeArtifactSyncItem)
+          .filter((item): item is ArtifactSyncItem => item !== null)
+      : [],
+    valid: raw.valid !== false,
+    error: typeof raw.error === "string" ? raw.error : "",
   };
 }
 
@@ -360,5 +473,37 @@ export const workspaceApi = {
   async putServerRoots(serverId: string, update: ServerRootsUpdate): Promise<ServerRoots> {
     const raw = await request(`/workspace/server-roots/${enc(serverId)}`, "PUT", update);
     return normalizeServerRoots(raw);
+  },
+
+  /** Zero-SSH read model: declarations + cached observations + active jobs. */
+  async getProjectDistribution(projectId: string): Promise<ProjectDistribution> {
+    const raw = await request(`/workspace/projects/${enc(projectId)}/distribution`, "GET");
+    const distribution = normalizeProjectDistribution(raw);
+    if (distribution === null) throw invalidPayload("project distribution");
+    return distribution;
+  },
+
+  /** Explicit SSH check across the project's placements; returns a fresh snapshot. */
+  async inspectProject(projectId: string): Promise<ProjectDistribution> {
+    const raw = await request(`/workspace/projects/${enc(projectId)}/inspect`, "POST", {});
+    const distribution = normalizeProjectDistribution(raw);
+    if (distribution === null) throw invalidPayload("project distribution");
+    return distribution;
+  },
+
+  /** Project-level reconciliation plan toward one target server (bounded SSH). */
+  async buildSyncPlan(projectId: string, body: SyncPlanRequest): Promise<ProjectSyncPlan> {
+    const raw = await request(`/workspace/projects/${enc(projectId)}/sync-plan`, "POST", body);
+    const plan = normalizeProjectSyncPlan(raw);
+    if (plan === null) throw invalidPayload("project sync plan");
+    return plan;
+  },
+
+  /** Execute the sync; the backend regenerates the plan and 409s on UNRESOLVED. */
+  async syncProject(projectId: string, body: SyncPlanRequest): Promise<TransferBatch> {
+    const raw = await request(`/workspace/projects/${enc(projectId)}/sync`, "POST", body);
+    const batch = normalizeTransferBatch(raw);
+    if (batch === null) throw invalidPayload("transfer batch");
+    return batch;
   },
 };

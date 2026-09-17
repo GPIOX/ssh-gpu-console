@@ -108,6 +108,9 @@ function resetStores(): void {
     loading: false,
     error: null,
     polling: false,
+    batches: [],
+    batchesLoading: false,
+    batchesError: null,
     dialog: { open: false, prefill: {} },
   });
   useTransferStore.getState().stopPolling();

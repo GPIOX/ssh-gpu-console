@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { parseHash, routeToHash } from "../shell/routes";
 import { workspaceApi } from "../services/workspaceApi";
+import { transfersApi } from "../services/transfersApi";
 import { createWorkspaceStore, useWorkspaceStore } from "../store/workspaceStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useTransferStore } from "../store/transferStore";
@@ -17,8 +18,10 @@ import { zh } from "../i18n/zh";
 import type { ServerRecord } from "../types/models";
 import type {
   ArtifactRecord,
+  DistributionItem,
   LaunchConfigRecord,
   PlacementRecord,
+  ProjectDistribution,
   ProjectRecord,
 } from "../types/workspace";
 import { WorkspacePage } from "../features/workspace/WorkspacePage";
@@ -91,6 +94,31 @@ function makeLaunchConfig(overrides: Partial<LaunchConfigRecord> = {}): LaunchCo
   };
 }
 
+function makeDistributionItem(overrides: Partial<DistributionItem> = {}): DistributionItem {
+  return {
+    artifact_id: "a1",
+    artifact_label: "DINOv2:b",
+    artifact_kind: "dataset",
+    server_id: "srv-a",
+    placement_id: "pl1",
+    remote_path: "/data/dinov2",
+    state: "declared",
+    checked_at: null,
+    detail: null,
+    active_transfer_job_id: null,
+    ...overrides,
+  };
+}
+
+function makeDistribution(overrides: Partial<ProjectDistribution> = {}): ProjectDistribution {
+  return {
+    project_id: "p1",
+    generated_at: NOW,
+    items: [],
+    ...overrides,
+  };
+}
+
 function resetWorkspace(): void {
   useWorkspaceStore.setState({
     projects: [],
@@ -111,6 +139,16 @@ function resetWorkspace(): void {
     inspections: {},
     inspecting: {},
     inspectErrors: {},
+    distributions: {},
+    distributionLoading: {},
+    distributionErrors: {},
+    projectInspecting: {},
+    projectInspectErrors: {},
+    syncPlan: null,
+    syncPlanLoading: false,
+    syncPlanError: null,
+    syncRunning: false,
+    syncError: null,
   });
 }
 
@@ -326,6 +364,11 @@ describe("ProjectDetail distribution matrix", () => {
       placements: [makePlacement()],
       launchConfigs: [makeLaunchConfig()],
     });
+    // ProjectDetail fetches the read-only snapshot on mount; keep tests hermetic.
+    vi.spyOn(transfersApi, "listBatches").mockResolvedValue([]);
+    vi.spyOn(workspaceApi, "getProjectDistribution").mockResolvedValue(
+      makeDistribution({ items: [makeDistributionItem({ state: "verified" })] }),
+    );
   });
 
   afterEach(() => {
@@ -334,15 +377,17 @@ describe("ProjectDetail distribution matrix", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders registry servers as columns and placements as ✓ cells", () => {
+  it("renders registry servers as columns and snapshot states as cells", async () => {
     render(<ProjectDetail projectId="p1" />);
     const matrix = screen.getByRole("table");
     expect(within(matrix).getByText("lab-4090")).toBeTruthy();
     expect(within(matrix).getByText("one4090")).toBeTruthy();
     expect(within(matrix).getByText("DINOv2:b")).toBeTruthy();
-    // 4 cells: a1 on srv-a present; the other three are missing
+    // 4 cells: a1 on srv-a verified per the snapshot; the other three have no
+    // declared placement.
+    expect(await screen.findByLabelText("present")).toBeTruthy();
     expect(screen.getAllByLabelText("present")).toHaveLength(1);
-    expect(screen.getAllByLabelText("missing")).toHaveLength(3);
+    expect(screen.getAllByLabelText("undeclared")).toHaveLength(3);
   });
 
   it("lists the project's launch configs as mono program+args with a GPU chip", () => {

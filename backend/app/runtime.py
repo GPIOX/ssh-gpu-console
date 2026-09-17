@@ -14,7 +14,9 @@ if TYPE_CHECKING:  # imports exist only for typing; nothing is imported at runti
     from app.core.config import Settings
     from app.ssh.manager import SshManager
     from app.telemetry.service import TelemetryService
+    from app.transfer.batch import BatchRegistry
     from app.transfer.service import TransferService
+    from app.workspace.distribution import DistributionService
     from app.workspace.service import WorkspaceService
 
 
@@ -25,6 +27,8 @@ class Runtime:
     telemetry: TelemetryService
     workspace: WorkspaceService | None = None
     transfers: TransferService | None = None
+    distribution: DistributionService | None = None
+    batches: BatchRegistry | None = None
 
 
 _runtime: Runtime | None = None

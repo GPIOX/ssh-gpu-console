@@ -1,11 +1,14 @@
 /**
- * Project detail: header (name, description, updated), the distribution
- * matrix (referenced artifacts × registry servers; ✓ present / — missing,
- * read-only from placement declarations), the placements table with explicit
- * inspection, and the project's launch configs (structured fields only).
+ * Project detail: header (name, description, updated), the Phase 4E
+ * distribution matrix (referenced artifacts × registry servers; state read
+ * from the read-only distribution snapshot, falling back to declared
+ * placements), the explicit 检查资源/同步缺失资源 actions, the placements
+ * table with per-placement inspection, and the project's launch configs
+ * (structured fields only). An active sync batch surfaces as a light
+ * "syncing k/N" line; when it turns terminal the snapshot refetches once.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft } from "@phosphor-icons/react";
 import {
   Button,
@@ -19,26 +22,48 @@ import {
   Skeleton,
 } from "../../design";
 import { useConsoleStore } from "../../store/consoleStore";
+import { openNewTransfer, useTransferStore } from "../../store/transferStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
-import { openNewTransfer } from "../../store/transferStore";
+import { isActiveBatchState, isTerminalBatchState } from "../../types/transfers";
 import type {
   ArtifactRecord,
+  DistributionState,
   LaunchConfigRecord,
   PlacementRecord,
 } from "../../types/workspace";
-import { useRelative, useT, tf } from "../../i18n";
+import { useRelative, useT, tf, type Dict } from "../../i18n";
 import { useNow } from "../../utils/clock";
+import { cx } from "../../utils/cx";
 import { WORKSPACE_HASH } from "../../shell/routes";
 import { artifactLabel, kindLabel } from "./shared";
 import { ProjectDialog } from "./ProjectDialog";
 import { PlacementDialog } from "./PlacementDialog";
 import { PlacementRemoveDialog, PlacementTable } from "./PlacementTable";
 import { LaunchConfigDialog } from "./LaunchConfigDialog";
+import { SyncDialog } from "./SyncDialog";
 import "./workspace.css";
 
 function commandLine(config: LaunchConfigRecord): string {
   const args = config.args.length > 0 ? ` ${config.args.join(" ")}` : "";
   return `${config.program}${args}`;
+}
+
+/** Glyph + accessible label per matrix state; null = no declared placement. */
+function cellMark(t: Dict, state: DistributionState | null): { glyph: string; label: string } {
+  switch (state) {
+    case "verified":
+      return { glyph: "✓", label: t.workspace.matrixPresent };
+    case "declared":
+      return { glyph: "○", label: t.workspace.stateDeclared };
+    case "missing":
+      return { glyph: "—", label: t.workspace.matrixMissing };
+    case "unavailable":
+      return { glyph: "!", label: t.workspace.stateUnavailable };
+    case "syncing":
+      return { glyph: "↻", label: t.workspace.stateSyncing };
+    default:
+      return { glyph: "—", label: t.workspace.matrixUndeclared };
+  }
 }
 
 export function ProjectDetail({ projectId }: { projectId: string }) {
@@ -56,10 +81,62 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const deleteProject = useWorkspaceStore((state) => state.deleteProject);
   const deleteLaunchConfig = useWorkspaceStore((state) => state.deleteLaunchConfig);
 
+  // Phase 4E distribution snapshot + explicit actions.
+  const distribution = useWorkspaceStore((state) => state.distributions[projectId]);
+  const distributionError = useWorkspaceStore(
+    (state) => state.distributionErrors[projectId] ?? null,
+  );
+  const inspecting = useWorkspaceStore((state) => state.projectInspecting[projectId] ?? false);
+  const inspectError = useWorkspaceStore(
+    (state) => state.projectInspectErrors[projectId] ?? null,
+  );
+  const fetchDistribution = useWorkspaceStore((state) => state.fetchDistribution);
+  const inspectProject = useWorkspaceStore((state) => state.inspectProject);
+  const batches = useTransferStore((state) => state.batches);
+  const fetchBatches = useTransferStore((state) => state.fetchBatches);
+  const syncPolling = useTransferStore((state) => state.syncPolling);
+  const stopPolling = useTransferStore((state) => state.stopPolling);
+
   const [editOpen, setEditOpen] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [syncOpen, setSyncOpen] = useState(false);
+
+  // Opening a project fetches the distribution snapshot (read-only GET — the
+  // backend performs no SSH for it). Errors keep the placement fallback.
+  useEffect(() => {
+    void fetchDistribution(projectId);
+  }, [projectId, fetchDistribution]);
+
+  // Discover an in-flight batch on mount (it may have been started on the
+  // Transfer Center); unmount stops the shared poller, mirroring that page.
+  useEffect(() => {
+    void fetchBatches();
+    return () => stopPolling();
+  }, [fetchBatches, stopPolling]);
+
+  // While this project has an active batch, keep the shared 1 Hz poller
+  // armed; once the watched batch turns terminal, refetch the distribution
+  // exactly once so the ↻ syncing cells settle.
+  const activeBatch = batches.find(
+    (batch) => batch.project_id === projectId && isActiveBatchState(batch.state),
+  );
+  const watchedBatchRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeBatch !== undefined) {
+      watchedBatchRef.current = activeBatch.batch_id;
+      syncPolling();
+      return;
+    }
+    const watchedId = watchedBatchRef.current;
+    if (watchedId === null) return;
+    watchedBatchRef.current = null;
+    const watched = batches.find((batch) => batch.batch_id === watchedId);
+    if (watched !== undefined && isTerminalBatchState(watched.state)) {
+      void fetchDistribution(projectId);
+    }
+  }, [activeBatch, batches, syncPolling, fetchDistribution, projectId]);
 
   const [placementDialog, setPlacementDialog] = useState<
     { mode: "add"; artifactId?: string } | { mode: "edit"; placement: PlacementRecord } | null
@@ -147,6 +224,16 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
     }
   };
 
+  // Explicit SSH check across the project's placements; the response replaces
+  // the cached distribution. Failures land in the store and render inline.
+  const runInspect = async (): Promise<void> => {
+    try {
+      await inspectProject(projectId);
+    } catch {
+      // recorded in the store; rendered next to the actions
+    }
+  };
+
   return (
     <div className="ws-detail">
       <BackLink />
@@ -177,10 +264,25 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
       <Section title={t.workspace.distribution} meta={t.workspace.distributionHint}>
         <Panel>
           <div className="ws-actions-inline">
+            {activeBatch !== undefined && (
+              <span className="ws-sync-progress mono tnum">
+                {tf(t.workspace.syncProgress, {
+                  done: activeBatch.completed_jobs,
+                  total: activeBatch.total_jobs,
+                })}
+              </span>
+            )}
+            <Button onClick={() => void runInspect()} disabled={inspecting}>
+              {inspecting ? t.workspace.inspecting : t.workspace.inspectAll}
+            </Button>
+            <Button onClick={() => setSyncOpen(true)}>{t.workspace.syncMissing}</Button>
+            <div className="ws-actions-inline__spacer" />
             <Button onClick={() => setPlacementDialog({ mode: "add" })}>
               {t.workspace.addPlacement}
             </Button>
           </div>
+          {inspectError !== null && <p className="field__error">{inspectError}</p>}
+          {distributionError !== null && <p className="field__error">{distributionError}</p>}
           {referenced.length === 0 ? (
             <EmptyState title={t.workspace.matrixEmpty} hint={t.workspace.noArtifactsYet} />
           ) : servers.length === 0 ? (
@@ -206,28 +308,47 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                         <Chip>{kindLabel(t, artifact.kind)}</Chip>
                       </td>
                       {servers.map((server) => {
-                        const present = placements.some(
+                        // The snapshot lists declared placements only; cells
+                        // without an item fall back to the declared placement
+                        // (○) and otherwise render the weak no-declaration dash.
+                        const item = distribution?.items.find(
+                          (entry) =>
+                            entry.artifact_id === artifact.artifact_id &&
+                            entry.server_id === server.server_id,
+                        );
+                        const placement = placements.find(
                           (p) =>
                             p.artifact_id === artifact.artifact_id &&
                             p.server_id === server.server_id,
                         );
+                        const state: DistributionState | null =
+                          item?.state ?? (placement !== undefined ? "declared" : null);
+                        const titleParts = [item?.remote_path ?? placement?.remote_path ?? ""];
+                        if (item?.checked_at !== undefined && item.checked_at !== null) {
+                          titleParts.push(relative(item.checked_at, now));
+                        }
+                        if (item?.detail !== undefined && item.detail !== null && item.detail !== "") {
+                          titleParts.push(item.detail);
+                        }
+                        const mark = cellMark(t, state);
                         return (
-                          <td key={server.server_id} className="ws-matrix__cell">
-                            {present ? (
-                              <span
-                                className="ws-matrix__present mono"
-                                aria-label={t.workspace.matrixPresent}
-                              >
-                                ✓
-                              </span>
-                            ) : (
-                              <span
-                                className="ws-matrix__missing"
-                                aria-label={t.workspace.matrixMissing}
-                              >
-                                —
-                              </span>
+                          <td
+                            key={server.server_id}
+                            className={cx(
+                              "ws-matrix__cell",
+                              state !== null && `ws-matrix__cell--${state}`,
                             )}
+                          >
+                            <span
+                              className={cx(
+                                "ws-matrix__mark mono",
+                                state === null && "ws-matrix__mark--undeclared",
+                              )}
+                              aria-label={mark.label}
+                              title={titleParts.some((part) => part !== "") ? titleParts.join("\n") : undefined}
+                            >
+                              {mark.glyph}
+                            </span>
                           </td>
                         );
                       })}
@@ -324,6 +445,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
         placement={placementRemove}
         onClose={() => setPlacementRemove(null)}
       />
+      <SyncDialog open={syncOpen} onClose={() => setSyncOpen(false)} projectId={project.project_id} />
       <LaunchConfigDialog
         open={configDialogOpen}
         onClose={() => setConfigDialogOpen(false)}

@@ -5,9 +5,77 @@
  * observation that lives in RAM on both sides and is never persisted.
  */
 
+import type { TransferStrategy } from "./transfers";
+
 export type ArtifactKind = "code" | "dataset" | "model";
 
 export type InspectionState = "declared" | "verified" | "missing" | "unavailable";
+
+/** Distribution snapshot state: inspection states plus the syncing overlay. */
+export type DistributionState = InspectionState | "syncing";
+
+/** Phase 4E: project distribution snapshot (RAM-only on both sides). */
+export interface ProjectDistribution {
+  project_id: string;
+  generated_at: string;
+  /** Declared placements only; cells without an item have no declaration. */
+  items: DistributionItem[];
+}
+
+export interface DistributionItem {
+  artifact_id: string;
+  artifact_label: string;
+  artifact_kind: string;
+  server_id: string;
+  placement_id: string | null;
+  remote_path: string;
+  state: DistributionState;
+  checked_at: string | null;
+  detail: string | null;
+  /** Set only while state is syncing. */
+  active_transfer_job_id: string | null;
+}
+
+export type SyncAction = "skip" | "transfer" | "unresolved";
+
+/** Body of POST /projects/{id}/sync-plan and POST /projects/{id}/sync. */
+export interface SyncPlanRequest {
+  target_server_id: string;
+  /** Omitted/null = every artifact of the project. */
+  artifact_ids?: string[] | null;
+  refresh_code?: boolean;
+  strategy?: TransferStrategy;
+}
+
+export interface ArtifactSyncItem {
+  artifact_id: string;
+  artifact_label: string;
+  artifact_kind: string;
+  /** Target placement state at decision time. */
+  target_status: DistributionState;
+  action: SyncAction;
+  /** Verbatim backend reason; the UI must show it for unresolved items. */
+  reason: string;
+  source_placement_id: string | null;
+  source_server_id: string | null;
+  source_path: string | null;
+  target_path: string | null;
+  /** TRANSFER items only; null otherwise. */
+  strategy_selected: TransferStrategy | null;
+  alternatives: string[];
+  warnings: string[];
+}
+
+export interface ProjectSyncPlan {
+  project_id: string;
+  target_server_id: string;
+  generated_at: string;
+  refresh_code: boolean;
+  items: ArtifactSyncItem[];
+  valid: boolean;
+  /** Plan-level error (e.g. overlapping TRANSFER target paths). */
+  error: string;
+}
 
 export interface ProjectRecord {
   project_id: string;

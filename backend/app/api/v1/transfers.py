@@ -9,12 +9,20 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
+from fastapi.routing import APIRoute
 
 from app.core.errors import AppError
-from app.models.transfer import TransferJob, TransferPlan, TransferRequest
+from app.models.transfer import (
+    TransferBatch,
+    TransferJob,
+    TransferPlan,
+    TransferRequest,
+    TransferState,
+)
 from app.runtime import get_runtime
 
 if TYPE_CHECKING:
+    from app.transfer.batch import BatchRegistry
     from app.transfer.service import TransferService
 
 router = APIRouter(prefix="/api/v1/transfers", tags=["transfers"])
@@ -86,3 +94,53 @@ async def retry_transfer(job_id: str) -> dict[str, str]:
         return await _service().retry(job_id)
     except AppError as error:
         raise _http_error(error) from error
+
+
+# ---- transfer batches (Phase 4D: RAM-only grouping of sync jobs) ------------------
+
+
+def _batches() -> BatchRegistry:
+    registry = get_runtime().batches
+    if registry is None:
+        raise RuntimeError("transfer batch registry unavailable")
+    return registry
+
+
+def _job_states() -> dict[str, TransferState]:
+    """Current state of every known job; feeds the batch state derivation."""
+    return {job.job_id: job.state for job in _service().list_jobs()}
+
+
+async def _list_transfer_batches() -> list[TransferBatch]:
+    # RAM only, zero SSH: active + archived batches, newest first.
+    return _batches().list(_job_states())
+
+
+async def _get_transfer_batch(batch_id: str) -> TransferBatch:
+    try:
+        return _batches().get(batch_id, _job_states())
+    except AppError as error:
+        raise _http_error(error) from error
+
+
+# Contract paths are /api/v1/transfer-batches[-/{batch_id}]; the transfers
+# router carries the /api/v1/transfers prefix and include_router would
+# concatenate it, so the two routes are registered with absolute paths.
+router.routes.append(
+    APIRoute(
+        "/api/v1/transfer-batches",
+        _list_transfer_batches,
+        methods=["GET"],
+        response_model=list[TransferBatch],
+        name="list_transfer_batches",
+    )
+)
+router.routes.append(
+    APIRoute(
+        "/api/v1/transfer-batches/{batch_id}",
+        _get_transfer_batch,
+        methods=["GET"],
+        response_model=TransferBatch,
+        name="get_transfer_batch",
+    )
+)
