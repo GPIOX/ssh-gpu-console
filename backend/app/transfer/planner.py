@@ -28,10 +28,13 @@ def build_rsync_command(
     source_path: str,
     target_spec: str,
     target_port: int | None,
+    excludes: list[str] | tuple[str, ...] = (),
 ) -> str:
     """Fixed-flag rsync command with safely quoted arguments (no user flags).
 
     Resume via --partial/--partial-dir; never --delete; never --append.
+    Exclusion patterns travel as --exclude=arg (full rsync semantics; the
+    transfer root itself is never excluded by rsync).
     """
     ssh_opts = "ssh -o BatchMode=yes -o ConnectTimeout=8"
     if target_port:
@@ -49,11 +52,21 @@ def build_rsync_command(
         "--info=progress2",
         "-e",
         shlex.quote(ssh_opts),
+        *(_exclude_args(excludes)),
         "--",
         shlex.quote(source_path),
         target_spec,  # already quoted by target_rsync_spec
     ]
     return " ".join(parts)
+
+
+def _exclude_args(excludes: list[str] | tuple[str, ...]) -> list[str]:
+    args: list[str] = []
+    for pattern in excludes:
+        value = pattern.strip()
+        if value and "\n" not in value and "\r" not in value and "\x00" not in value:
+            args.append(f"--exclude={value}")
+    return args
 
 
 def target_rsync_spec(
@@ -107,6 +120,7 @@ async def plan_transfer(
     target_path: str,
     artifact_id: str,
     ssh: SshManager,
+    excludes: list[str] | None = None,
 ) -> TransferPlan:
     """Run the direct-rsync preflight and select the strategy.
 
@@ -121,6 +135,7 @@ async def plan_transfer(
         target_server_id=target_server.server_id,  # type: ignore[attr-defined]
         target_path=target_path,
         strategy_requested=requested,
+        excludes=list(excludes or ()),
     )
 
     rsync_source = await _rsync_present(source_executor)

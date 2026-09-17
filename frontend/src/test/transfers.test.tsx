@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { parseHash, routeToHash } from "../shell/routes";
 import { transfersApi } from "../services/transfersApi";
+import { workspaceApi } from "../services/workspaceApi";
 import { TRANSFER_POLL_MS, useTransferStore } from "../store/transferStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
@@ -36,6 +37,7 @@ function makeJob(overrides: Partial<TransferJob> = {}): TransferJob {
     strategy_requested: "auto",
     strategy_used: "direct_rsync",
     state: "running",
+    excludes: [],
     bytes_total: 10 * 1024 ** 3,
     bytes_done: 2 * 1024 ** 3,
     files_total: 100,
@@ -64,6 +66,7 @@ const planFixture: TransferPlan = {
   reason: "direct rsync preflight passed (auto)",
   source_exists: true,
   source_size_b: 10 * 1024 ** 3,
+  excludes: [],
 };
 
 const servers: ServerRecord[] = [
@@ -217,6 +220,13 @@ describe("TransferJobRow rendering", () => {
 });
 
 describe("TransfersPage", () => {
+  beforeEach(() => {
+    // The page prefetches the workspace catalog so the New-Transfer dialog
+    // works after a direct landing; keep tests hermetic.
+    vi.spyOn(workspaceApi, "listArtifacts").mockResolvedValue([]);
+    vi.spyOn(workspaceApi, "listPlacements").mockResolvedValue([]);
+  });
+
   afterEach(() => {
     cleanup();
     useTransferStore.getState().stopPolling();
@@ -230,6 +240,18 @@ describe("TransfersPage", () => {
     expect(useTransferStore.getState().polling).toBe(true);
     unmount();
     expect(useTransferStore.getState().polling).toBe(false);
+  });
+
+  it("prefetches workspace assets when landing directly on the page", async () => {
+    const listJobs = vi.spyOn(transfersApi, "listJobs").mockResolvedValue([]);
+    const listArtifacts = workspaceApi.listArtifacts as ReturnType<typeof vi.fn>;
+    const listPlacements = workspaceApi.listPlacements as ReturnType<typeof vi.fn>;
+    render(<TransfersPage />);
+    await waitFor(() => {
+      expect(listJobs).toHaveBeenCalled();
+      expect(listArtifacts).toHaveBeenCalled();
+      expect(listPlacements).toHaveBeenCalled();
+    });
   });
 
   it("shows the mono header counts for mixed states", async () => {
@@ -301,6 +323,23 @@ describe("NewTransferDialog", () => {
     });
     expect(listSpy).toHaveBeenCalled(); // list refreshed after create
     expect(useTransferStore.getState().dialog.open).toBe(false);
+  });
+
+  it("shows the effective project exclude patterns in the plan preview", async () => {
+    vi.spyOn(transfersApi, "plan").mockResolvedValue({
+      ...planFixture,
+      excludes: ["dataset", "checkpoints"],
+    });
+    useTransferStore.setState({
+      dialog: { open: true, prefill: { artifactId: "a1" } },
+    });
+
+    render(<NewTransferDialog open />);
+    await screen.findByDisplayValue("/data/DINOv2:b");
+
+    expect(await screen.findByText("Skipped by project excludes:")).toBeTruthy();
+    expect(screen.getByText("dataset")).toBeTruthy();
+    expect(screen.getByText("checkpoints")).toBeTruthy();
   });
 
   it("shows per-method availability and the localized no-direct-SSH reason", async () => {

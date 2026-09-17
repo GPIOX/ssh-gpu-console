@@ -37,6 +37,7 @@ async def relay_transfer(
     target: TransferSession,
     chunk_size: int,
     progress_every_bytes: int = 32 * 1024 * 1024,
+    excludes: tuple[str, ...] | list[str] = (),
 ) -> None:
     """Copy source_path (single file or recursive directory) A -> B."""
     source_stat = await source.stat(job.source_path)
@@ -52,7 +53,7 @@ async def relay_transfer(
         return
 
     await target.mkdir(job.target_path)
-    job.files_total = await _count_tree(job, source)
+    job.files_total = await _count_tree(job, source, excludes)
     await _relay_dir(
         job,
         source,
@@ -61,8 +62,18 @@ async def relay_transfer(
         target_dir=job.target_path,
         chunk_size=chunk_size,
         progress_every_bytes=progress_every_bytes,
+        excludes=excludes,
     )
     job.current_path = None
+
+
+def is_excluded(name: str, excludes: tuple[str, ...] | list[str]) -> bool:
+    """Entry-name match against the project's exclude patterns (fnmatch
+    syntax, mirroring rsync's no-slash basename rule). The transfer root
+    itself is never filtered — excludes only apply to walk children."""
+    import fnmatch
+
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in excludes)
 
 
 async def _relay_file(
@@ -113,7 +124,11 @@ async def _close_quiet(handle: object) -> None:
             await result
 
 
-async def _count_tree(job: TransferJob, source: TransferSession) -> int:
+async def _count_tree(
+    job: TransferJob,
+    source: TransferSession,
+    excludes: tuple[str, ...] | list[str] = (),
+) -> int:
     total = 0
     stack = [job.source_path]
     while stack:
@@ -121,6 +136,10 @@ async def _count_tree(job: TransferJob, source: TransferSession) -> int:
             raise CancelRequested(job.job_id)
         current = stack.pop()
         for name in await source.listdir(current):
+            # Defense in depth: sessions filter the SFTP dot entries; a
+            # session that doesn't would loop forever on <dir>/. here.
+            if name in (".", "..") or is_excluded(name, excludes):
+                continue
             child = f"{current.rstrip('/')}/{name}"
             stat = await source.stat(child)
             if stat.exists and stat.is_dir:
@@ -139,10 +158,13 @@ async def _relay_dir(
     target_dir: str,
     chunk_size: int,
     progress_every_bytes: int = 32 * 1024 * 1024,
+    excludes: tuple[str, ...] | list[str] = (),
 ) -> None:
     await target.mkdir(target_dir)
     names = await source.listdir(source_dir)
     for name in names:
+        if name in (".", "..") or is_excluded(name, excludes):
+            continue
         if is_cancelled(job):
             raise CancelRequested(job.job_id)
         source_child = f"{source_dir.rstrip('/')}/{name}"
@@ -158,6 +180,7 @@ async def _relay_dir(
                 source_dir=source_child,
                 target_dir=target_child,
                 chunk_size=chunk_size,
+                excludes=excludes,
             )
         else:
             await _relay_file(job, source, target, source_child, target_child, chunk_size)

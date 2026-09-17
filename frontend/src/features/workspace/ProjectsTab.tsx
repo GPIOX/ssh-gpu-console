@@ -12,6 +12,7 @@ import type { ProjectRecord } from "../../types/workspace";
 import { useRelative, useT, tf } from "../../i18n";
 import { useNow } from "../../utils/clock";
 import { ProjectDialog } from "./ProjectDialog";
+import { ProjectExcludesDialog } from "./ProjectExcludesDialog";
 import "./workspace.css";
 
 type DialogTarget = { mode: "add" } | { mode: "edit"; project: ProjectRecord } | null;
@@ -28,6 +29,7 @@ export function ProjectsTab() {
   const deleteProject = useWorkspaceStore((state) => state.deleteProject);
 
   const [dialog, setDialog] = useState<DialogTarget>(null);
+  const [excludesTarget, setExcludesTarget] = useState<ProjectRecord | null>(null);
   const [removeTarget, setRemoveTarget] = useState<ProjectRecord | null>(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
@@ -123,6 +125,11 @@ export function ProjectsTab() {
                     onSelect: () => setDialog({ mode: "edit", project }),
                   },
                   {
+                    id: "excludes",
+                    label: t.workspace.editSyncExcludes,
+                    onSelect: () => setExcludesTarget(project),
+                  },
+                  {
                     id: "remove",
                     label: t.common.remove,
                     danger: true,
@@ -157,6 +164,12 @@ export function ProjectsTab() {
         open={dialog !== null}
         onClose={() => setDialog(null)}
         project={dialog?.mode === "edit" ? dialog.project : null}
+      />
+
+      <ProjectExcludesDialog
+        open={excludesTarget !== null}
+        onClose={() => setExcludesTarget(null)}
+        project={excludesTarget}
       />
 
       <Dialog

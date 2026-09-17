@@ -33,8 +33,27 @@ class ProjectRecord(BaseModel):
     artifact_ids: list[str] = Field(default_factory=list, max_length=64)
     launch_config_ids: list[str] = Field(default_factory=list, max_length=32)
     tags: list[str] = Field(default_factory=list, max_length=16)
+    # Default rsync/fnmatch exclusion patterns applied when any of this
+    # project's artifacts is transferred (e.g. "dataset", "checkpoints",
+    # "*.pth"). Never a shell string: passed to rsync as --exclude=arg and
+    # matched per entry name in the relay walk.
+    transfer_excludes: list[str] = Field(default_factory=list, max_length=32)
     created_at: str = ""
     updated_at: str = ""
+
+    @field_validator("transfer_excludes")
+    @classmethod
+    def _clean_excludes(cls, patterns: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for pattern in patterns:
+            value = pattern.strip()
+            if not value:
+                raise ValueError("exclude patterns must not be empty")
+            if any(char in value for char in "\n\r\x00"):
+                raise ValueError("exclude patterns must be single-line")
+            if value not in cleaned:
+                cleaned.append(value)
+        return cleaned
 
 
 class ProjectCreate(BaseModel):
@@ -44,6 +63,7 @@ class ProjectCreate(BaseModel):
     description: str = _DESC
     artifact_ids: list[str] = Field(default_factory=list, max_length=64)
     tags: list[str] = Field(default_factory=list, max_length=16)
+    transfer_excludes: list[str] = Field(default_factory=list, max_length=32)
 
 
 class ProjectPatch(BaseModel):
@@ -53,6 +73,7 @@ class ProjectPatch(BaseModel):
     description: str | None = Field(default=None, max_length=600)
     artifact_ids: list[str] | None = Field(default=None, max_length=64)
     tags: list[str] | None = Field(default=None, max_length=16)
+    transfer_excludes: list[str] | None = Field(default=None, max_length=32)
 
 
 class ArtifactRecord(BaseModel):

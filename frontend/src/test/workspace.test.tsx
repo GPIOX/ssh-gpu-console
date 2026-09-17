@@ -24,6 +24,7 @@ import type {
 import { WorkspacePage } from "../features/workspace/WorkspacePage";
 import { ProjectDetail } from "../features/workspace/ProjectDetail";
 import { ProjectDialog } from "../features/workspace/ProjectDialog";
+import { ProjectExcludesDialog } from "../features/workspace/ProjectExcludesDialog";
 import { ArtifactDialog } from "../features/workspace/ArtifactDialog";
 import { LaunchConfigDialog } from "../features/workspace/LaunchConfigDialog";
 import { PlacementTable } from "../features/workspace/PlacementTable";
@@ -38,6 +39,7 @@ function makeProject(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
     artifact_ids: [],
     launch_config_ids: [],
     tags: ["cv"],
+    transfer_excludes: [],
     created_at: NOW,
     updated_at: NOW,
     ...overrides,
@@ -555,6 +557,58 @@ describe("dialog payload shapes", () => {
     });
     const submit = screen.getByRole("button", { name: "Add launch config" }) as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
+  });
+});
+
+describe("project sync excludes editor", () => {
+  afterEach(() => {
+    resetWorkspace();
+    resetConsole();
+    vi.restoreAllMocks();
+  });
+
+  it("opens with the current patterns and PATCHes the parsed comma list", async () => {
+    const patchSpy = vi
+      .spyOn(workspaceApi, "patchProject")
+      .mockResolvedValue(makeProject({ transfer_excludes: ["dataset", "checkpoints"] }));
+
+    render(
+      <ProjectExcludesDialog
+        open
+        onClose={() => undefined}
+        project={makeProject({ transfer_excludes: ["dataset", "checkpoints"] })}
+      />,
+    );
+    const field = screen.getByLabelText("Default sync excludes") as HTMLInputElement;
+    expect(field.value).toBe("dataset, checkpoints");
+
+    fireEvent.change(field, { target: { value: "dataset, checkpoints, *.pth, .git" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      expect(patchSpy).toHaveBeenCalledWith("p1", {
+        transfer_excludes: ["dataset", "checkpoints", "*.pth", ".git"],
+      });
+    });
+  });
+
+  it("clears the list when the field is emptied", async () => {
+    const patchSpy = vi
+      .spyOn(workspaceApi, "patchProject")
+      .mockResolvedValue(makeProject());
+    render(
+      <ProjectExcludesDialog
+        open
+        onClose={() => undefined}
+        project={makeProject({ transfer_excludes: ["dataset"] })}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Default sync excludes"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      expect(patchSpy).toHaveBeenCalledWith("p1", { transfer_excludes: [] });
+    });
   });
 });
 

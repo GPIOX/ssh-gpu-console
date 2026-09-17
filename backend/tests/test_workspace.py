@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import pydantic
 import pytest
 from app.core.config import Settings
 from app.core.errors import ConflictError, NotFoundError
@@ -413,3 +414,20 @@ def test_workspace_store_corrupt_tolerated(tmp_path: Path) -> None:
     store_path.write_text("{corrupt json")
     repo = WorkspaceRepository(JsonFileStore(store_path))
     assert repo.projects() == []  # corrupt file never renamed at startup
+
+
+def test_project_transfer_excludes_validation_and_resolution(tmp_path: Path) -> None:
+    service, _repo = make_service(tmp_path)
+    project = service.create_project(
+        ProjectCreate(name="P", transfer_excludes=["dataset", "checkpoints"])
+    )
+    assert project.transfer_excludes == ["dataset", "checkpoints"]
+
+    # Duplicates are collapsed; empty/blank entries are rejected.
+    with pytest.raises(pydantic.ValidationError):
+        service.update_project(project.project_id, ProjectPatch(transfer_excludes=["", "dataset"]))
+    updated = service.update_project(
+        project.project_id, ProjectPatch(transfer_excludes=["dataset", "dataset", "*.pth"])
+    )
+    assert updated.transfer_excludes == ["dataset", "*.pth"]
+    assert service.project(project.project_id).transfer_excludes == ["dataset", "*.pth"]

@@ -316,6 +316,10 @@ export const zh: Dict = {
     description: "描述",
     tags: "标签",
     tagsCommaHint: "逗号分隔",
+    editSyncExcludes: "编辑同步排除规则",
+    syncExcludes: "默认同步排除",
+    syncExcludesHint: "rsync/fnmatch 模式，逗号分隔；传输本项目的任何条目时，名称匹配其中之一的文件或目录都会被跳过",
+
     artifacts: "资产",
     noArtifactsYet: "还没有资产——请先在数据集或模型页创建。",
     removeProjectTitle: "删除项目 {name}？",
@@ -453,6 +457,8 @@ export const zh: Dict = {
     available: "可用",
     unavailable: "不可用",
     noDirectSsh: "源服务器无法直接 SSH 到目标服务器",
+    planExcludes: "项目排除规则将跳过：",
+
     planning: "正在规划…",
     planFailed: "规划失败",
     create: "开始传输",

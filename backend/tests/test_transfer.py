@@ -191,6 +191,9 @@ class FakeSsh:
     async def close_transfer_sessions(self) -> None:
         return None
 
+    async def close_all(self) -> None:
+        return None
+
     def build_executor_for(self, server_id: str) -> Any:
         class _Exec:
             async def run(self, command: str, *, timeout_s: float = 10.0) -> RemoteCommandResult:
@@ -463,3 +466,140 @@ def _job(**overrides: Any) -> TransferJob:
     }
     payload.update(overrides)
     return JobRegistry(10).create(**payload)
+
+
+# ---- API layer ----------------------------------------------------------------------
+
+
+def test_create_transfer_api_schedules_worker_on_app_loop(tmp_path: Path) -> None:
+    """Regression: the create endpoint ran as a sync def (threadpool) where no
+    event loop exists, so service.create() raised RuntimeError -> 500 while the
+    plan preview had already succeeded. With TestClient this must reach 202 and
+    the worker must run to completion on the app loop."""
+    import time
+
+    from app.core.lifecycle import AppContext
+    from app.main import create_app
+    from app.servers.registry import get_default_registry
+    from app.telemetry.service import TelemetryService
+    from fastapi.testclient import TestClient
+
+    class _DummyExecutor:
+        async def run(self, _command: str, *, timeout_s: float = 10.0) -> RemoteCommandResult:
+            return RemoteCommandResult(0, "", "", 1.0)
+
+        async def close(self) -> None:
+            return None
+
+    fs_by_server = {"srv-a": MemFS(), "srv-b": MemFS()}
+    fs_by_server["srv-a"].add_dir("~/data")
+    fs_by_server["srv-a"].add_file("~/data/d.bin", b"payload" * 1000)
+    service, workspace, ids = _service(tmp_path, fs_by_server)
+    artifact = workspace.create_artifact(ArtifactCreate(kind="dataset", name="IVMSD"))
+    placement = workspace.create_placement(
+        PlacementCreate(
+            artifact_id=artifact.artifact_id,
+            server_id=ids["srv-a"],
+            remote_path="~/data",
+        )
+    )
+    context = AppContext(
+        service._settings,
+        ssh=service._ssh,  # type: ignore[arg-type]
+        telemetry=TelemetryService(
+            service._settings,
+            get_default_registry(),
+            lambda _sid, _record: _DummyExecutor(),  # type: ignore[arg-type,return-value]
+        ),
+        workspace=workspace,
+        transfers=service,
+    )
+    client = TestClient(create_app(service._settings, context=context))
+    with client:
+        response = client.post(
+            "/api/v1/transfers",
+            json={
+                "artifact_id": artifact.artifact_id,
+                "source_placement_id": placement.placement_id,
+                "target_server_id": ids["srv-b"],
+                "target_path": "~/models/IVMSD",
+                "strategy": "local_relay",
+            },
+        )
+        assert response.status_code == 202, response.text
+        job_id = response.json()["job_id"]
+
+        deadline = time.monotonic() + 5.0
+        state = None
+        while time.monotonic() < deadline:
+            payload = client.get(f"/api/v1/transfers/{job_id}").json()
+            state = payload["state"]
+            if state in ("completed", "failed"):
+                break
+            time.sleep(0.02)
+        assert state == "completed", payload
+
+
+@pytest.mark.asyncio
+async def test_relay_survives_dot_entries_from_listing() -> None:
+    """Real SFTP readdir includes "." and ".."; a session that passes them
+    through must not make the directory walk loop forever (field-observed:
+    the job sat at 0 bytes until cancelled)."""
+    src, dst = MemFS(), MemFS()
+    src.add_dir("~/data")
+    src.add_dir("~/data/sub")
+    src.add_file("~/data/model.bin", b"abc" * 100)
+    src.add_file("~/data/sub/piece.bin", b"xyz" * 100)
+    job = _job(source_path="~/data", target_path="~/mirror/data")
+
+    class DottedSession(FakeTransferSession):
+        async def listdir(self, path: str) -> list[str]:
+            names = await super().listdir(path)
+            return [".", "..", *names]
+
+    await relay_transfer(
+        job=job, source=DottedSession(src), target=DottedSession(dst), chunk_size=1024
+    )
+    assert dst.files["~/mirror/data/model.bin"] == b"abc" * 100
+    assert dst.files["~/mirror/data/sub/piece.bin"] == b"xyz" * 100
+    assert job.files_done == 2
+
+
+@pytest.mark.asyncio
+async def test_relay_honors_project_excludes() -> None:
+    """Excluded entry names are skipped in the walk (never counted, never
+    copied); the transfer root's own name is not affected."""
+    src, dst = MemFS(), MemFS()
+    src.add_dir("~/app")
+    src.add_dir("~/app/dataset")
+    src.add_dir("~/app/src")
+    src.add_file("~/app/dataset/D1.bin", b"heavy" * 100)
+    src.add_file("~/app/src/main.py", b"code")
+    job = _job(source_path="~/app", target_path="~/app-mirror", artifact_label="app")
+
+    await relay_transfer(
+        job=job,
+        source=FakeTransferSession(src),
+        target=FakeTransferSession(dst),
+        chunk_size=1024,
+        excludes=("dataset", "*.log"),
+    )
+    assert dst.files["~/app-mirror/src/main.py"] == b"code"
+    assert "~/app-mirror/dataset/D1.bin" not in dst.files
+    assert job.files_done == 1
+
+
+@pytest.mark.asyncio
+async def test_relay_single_file_transfer_ignores_excludes() -> None:
+    src, dst = MemFS(), MemFS()
+    src.add_file("~/weights/model.bin", b"w" * 512)
+    job = _job(source_path="~/weights/model.bin", target_path="~/mirror/model.bin")
+
+    await relay_transfer(
+        job=job,
+        source=FakeTransferSession(src),
+        target=FakeTransferSession(dst),
+        chunk_size=1024,
+        excludes=("*.bin",),
+    )
+    assert dst.files["~/mirror/model.bin"] == b"w" * 512

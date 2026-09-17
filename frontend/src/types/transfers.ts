@@ -45,6 +45,8 @@ export interface TransferPlan {
   reason: string;
   source_exists: boolean | null;
   source_size_b: number | null;
+  /** Effective exclusions (union of referencing projects' defaults). */
+  excludes: string[];
 }
 
 export interface TransferRequest {
@@ -70,6 +72,7 @@ export interface TransferJob {
   strategy_requested: TransferStrategy;
   strategy_used: TransferStrategy | null;
   state: TransferState;
+  excludes: string[];
 
   bytes_total: number | null;
   bytes_done: number;

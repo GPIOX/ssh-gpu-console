@@ -91,6 +91,7 @@ export function normalizeProjectRecord(raw: unknown): ProjectRecord | null {
     artifact_ids: strList(raw.artifact_ids),
     launch_config_ids: strList(raw.launch_config_ids),
     tags: strList(raw.tags),
+    transfer_excludes: strList(raw.transfer_excludes),
     created_at: typeof raw.created_at === "string" ? raw.created_at : "",
     updated_at: typeof raw.updated_at === "string" ? raw.updated_at : "",
   };

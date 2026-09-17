@@ -38,6 +38,7 @@ class JobRegistry:
         target_server_id: str,
         target_path: str,
         strategy_requested: TransferStrategy,
+        excludes: list[str] | None = None,
     ) -> TransferJob:
         job = TransferJob(
             job_id=uuid.uuid4().hex[:12],
@@ -48,6 +49,7 @@ class JobRegistry:
             target_server_id=target_server_id,
             target_path=target_path,
             strategy_requested=strategy_requested,
+            excludes=list(excludes or []),
             created_at=datetime.now(UTC).isoformat(timespec="seconds"),
         )
         self._active[job.job_id] = job

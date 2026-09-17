@@ -50,6 +50,9 @@ class TransferPlan(BaseModel):
     reason: str = ""
     source_exists: bool | None = None
     source_size_b: int | None = None
+    # Effective exclusions (union of the referencing projects' defaults) shown
+    # in the plan preview so the user sees what will NOT be copied.
+    excludes: list[str] = Field(default_factory=list, max_length=32)
 
 
 class TransferRequest(BaseModel):
@@ -78,6 +81,7 @@ class TransferJob(BaseModel):
     strategy_requested: TransferStrategy
     strategy_used: TransferStrategy | None = None
     state: TransferState = TransferState.QUEUED
+    excludes: list[str] = Field(default_factory=list, max_length=32)
 
     bytes_total: int | None = None
     bytes_done: int = 0

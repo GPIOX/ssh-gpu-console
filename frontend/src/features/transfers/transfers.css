@@ -178,3 +178,15 @@
   font-size: 11.5px;
   color: var(--text-3);
 }
+
+.tf-plan__excludes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tf-plan__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}

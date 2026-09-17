@@ -16,6 +16,8 @@ export interface ProjectRecord {
   artifact_ids: string[];
   launch_config_ids: string[];
   tags: string[];
+  /** Default transfer exclusion patterns (rsync/fnmatch) for this project. */
+  transfer_excludes: string[];
   created_at: string;
   updated_at: string;
 }
@@ -32,6 +34,7 @@ export interface ProjectPatch {
   description?: string;
   artifact_ids?: string[];
   tags?: string[];
+  transfer_excludes?: string[];
 }
 
 export interface ArtifactRecord {

@@ -46,6 +46,7 @@ class WorkspaceService:
             description=request.description.strip(),
             artifact_ids=list(dict.fromkeys(request.artifact_ids)),
             tags=list(request.tags),
+            transfer_excludes=request.transfer_excludes,
             created_at=_stamp(),
             updated_at=_stamp(),
         )

@@ -9,6 +9,7 @@ import { useEffect } from "react";
 import { Button, EmptyState, ErrorPanel, Panel, Skeleton } from "../../design";
 import { tf, useT } from "../../i18n";
 import { useTransferStore } from "../../store/transferStore";
+import { useWorkspaceStore } from "../../store/workspaceStore";
 import { NewTransferDialog } from "./NewTransferDialog";
 import { TransferJobRow } from "./TransferJobRow";
 import "./transfers.css";
@@ -24,11 +25,18 @@ export function TransfersPage() {
   const openNewTransfer = useTransferStore((state) => state.openNewTransfer);
   const cancelJob = useTransferStore((state) => state.cancelJob);
   const retryJob = useTransferStore((state) => state.retryJob);
+  const loadArtifacts = useWorkspaceStore((state) => state.loadArtifacts);
+  const loadPlacements = useWorkspaceStore((state) => state.loadPlacements);
 
   useEffect(() => {
     void loadJobs();
+    // The New-Transfer dialog lists workspace assets; after a refresh a user
+    // can land directly on this page, so prefetch the catalog (idempotent
+    // GETs, never polled).
+    void loadArtifacts();
+    void loadPlacements();
     return () => stopPolling(); // page unmount clears the 1 Hz timer
-  }, [loadJobs, stopPolling]);
+  }, [loadJobs, loadArtifacts, loadPlacements, stopPolling]);
 
   // 进行中 = planning/running/verifying; 等待 = queued; 已完成 = completed.
   const counts = {

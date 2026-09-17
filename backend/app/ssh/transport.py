@@ -240,7 +240,13 @@ def build_executor(manager: SshManager, server: ServerRecord) -> Executor:
 
 # ---- file-transfer runtime (the only asyncssh importer; transfer domain never sees it)
 
+# asyncssh SFTP errors are NOT OSError subclasses (SFTPNoSuchFile.message is
+# literally "No such file"); every sftp call must catch it beside the builtins.
+from asyncssh.sftp import SFTPError, SFTPNoSuchFile  # noqa: E402
+
 from app.ssh.file_transfer import FileStat  # noqa: E402
+
+_MISSING_SFTP = (FileNotFoundError, SFTPNoSuchFile)
 
 
 class SftpTransferSession:
@@ -261,7 +267,7 @@ class SftpTransferSession:
 
         try:
             info = await self._sftp.stat(path)
-        except FileNotFoundError:
+        except _MISSING_SFTP:
             return FileStat(exists=False, is_dir=False)
         mode = info.permissions or 0
         return FileStat(exists=True, is_dir=stat_module.S_ISDIR(mode), size_b=info.size or 0)
@@ -279,13 +285,23 @@ class SftpTransferSession:
             )
             try:
                 await self._sftp.stat(current)
-            except FileNotFoundError:
-                with contextlib.suppress(FileExistsError):
+            except _MISSING_SFTP:
+                try:
                     await self._sftp.mkdir(current)
+                except (FileExistsError, SFTPError):
+                    # Lost a creation race (or the server reports the level as
+                    # existing): accept only when it is there now, else the
+                    # next write fails with the real reason.
+                    try:
+                        await self._sftp.stat(current)
+                    except _MISSING_SFTP:
+                        raise
 
     async def listdir(self, path: str) -> list[str]:
+        # SFTP readdir always includes "." and ".."; callers walk directories
+        # recursively and would loop forever on <dir>/. — filter them here.
         entries = await self._sftp.readdir(path)
-        return [entry.filename for entry in entries]
+        return [entry.filename for entry in entries if entry.filename not in (".", "..")]
 
     async def open_reader(self, path: str) -> Any:
         return await self._sftp.open(path, "rb")

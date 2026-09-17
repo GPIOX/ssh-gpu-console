@@ -70,6 +70,18 @@ script per experiment) is the best source of the exact command line.
 - **Server roots** on BOTH the source and the target server: the target's
   roots decide the sync target-path prefill (`<root>/<name:version>`), per
   kind: dataset → `dataset_root`, model → `model_root`, code → `project_root`.
+  Mirror the SOURCE layout on the target (e.g. target `dataset_root` under the
+  code tree) so selective syncs and whole-tree syncs land at the same place
+  instead of duplicating data.
+- **Transfer excludes** on the PROJECT (`transfer_excludes`, editable via the
+  ⋯ menu "编辑同步排除" or PATCH transfer_excludes): rsync/fnmatch patterns
+  applied when ANY of the project's artifacts is transferred. Sync code trees
+  by seeding heavy dirs out (`dataset`, `checkpoints`, `.git`, `__pycache__`,
+  `nohup.out`) and moving them as their own dataset/model artifacts instead —
+  the relay skips matching entry names during the walk, rsync gets
+  `--exclude=arg` (full rsync semantics; the transfer root itself is never
+  excluded). When an artifact is referenced by several projects the union
+  applies. The effective list is shown in the New-Transfer plan preview.
 - **Launch configs** are structured `program + args` (never shell strings):
   one config per experiment; reuse real script content for `program`/`args`;
   `environment` is the conda env name; `required_artifact_ids` lists the
@@ -104,11 +116,12 @@ first caution below.
 
 ## Field-tested cautions
 
-- **Code artifacts can be heavy.** A code placement covering the whole project
-  tree also covers nested `dataset/` and `checkpoints/` subdirectories; the
-  transfer MVP has no exclude list, so syncing "code" would drag ~all data
-  along. If the user only needs code, ask for a split (register the code tree
-  minus heavy dirs, or extend the transfer planner with excludes first).
+- **Code artifacts can be heavy — use excludes.** A code placement covering
+  the whole project tree also covers nested `dataset/` and `checkpoints/`
+  subdirectories. Configure `transfer_excludes` on the project BEFORE syncing
+  code, or the transfer drags all data through the relay. Heavy content
+  should be its own artifacts (synced selectively at the same mirrored
+  paths); excluded patterns never remove the transfer root itself.
 - **Model run dirs** (`log_*`-style) usually bundle tensorboard + training
   logs + `weights/`. Registering the whole run dir as one model artifact is
   fine for archiving; name the placement at the run dir, not at loose files.
@@ -118,8 +131,14 @@ first caution below.
   model runs the user may want to edit the target path before confirming.
 - **Validation gotchas.** `program`/`working_dir` reject shell metacharacters
   (`; & | $ ( ) { }` etc. — see `app/models/workspace.py`); remote paths are
-  ≤512 chars; args ≤64 tokens. `launch_config_ids` on a project is DERIVED at
-  read time — never try to PATCH it.
+  ≤512 chars; args ≤64 tokens; exclude patterns ≤32 single-line entries
+  (duplicates collapse, blank entries rejected). `launch_config_ids` on a
+  project is DERIVED at read time — never try to PATCH it.
 - **Sync needs trust, not just declaration.** The target server must be added
   and online (host key trusted) before a transfer can run; the first sync of
   a big dataset is a good stress test of relay/strategy behavior.
+- **Many-small-file datasets are slow through the relay** (per-file SFTP
+  round trips over the jump). A ~1 GB dataset with ~7k files takes minutes —
+  set expectations, keep the 1 Hz polling patient, and prefer batching the
+  remaining datasets overnight rather than assuming a hang (the progress
+  counter is the source of truth, not the elapsed time).

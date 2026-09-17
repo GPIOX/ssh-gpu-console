@@ -40,7 +40,10 @@ async def rsync_transfer(
         target_path=job.target_path,
     )
     command = build_rsync_command(
-        source_path=job.source_path, target_spec=spec, target_port=target_params.port
+        source_path=job.source_path,
+        target_spec=spec,
+        target_port=target_params.port,
+        excludes=list(job.excludes),
     )
     if source_size_b is not None and source_size_b > 0:
         job.bytes_total = source_size_b

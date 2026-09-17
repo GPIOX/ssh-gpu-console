@@ -77,6 +77,21 @@ class TransferService:
 
     # ---- planning (creates no job) ------------------------------------------------
 
+    def _resolve_excludes(self, artifact_id: str) -> list[str]:
+        """Union of the referencing projects' exclude patterns.
+
+        Any project's exclusion wins (the copy can only shrink, never grow);
+        duplicates are dropped in first-seen order.
+        """
+        merged: list[str] = []
+        for project in self._workspace.projects():
+            if artifact_id not in project.artifact_ids:
+                continue
+            for pattern in project.transfer_excludes:
+                if pattern and pattern not in merged:
+                    merged.append(pattern)
+        return merged
+
     async def plan(self, request: TransferRequest) -> TransferPlan:
         stub = self._materialize(request)
         source_server = self._server(stub.source_server_id)
@@ -93,6 +108,7 @@ class TransferService:
             target_path=stub.target_path,
             artifact_id=request.artifact_id,
             ssh=self._ssh,
+            excludes=self._resolve_excludes(request.artifact_id),
         )
 
     # ---- creation -----------------------------------------------------------------
@@ -120,6 +136,7 @@ class TransferService:
             target_server_id=request.target_server_id,
             target_path=_clean_path(request.target_path),
             strategy_requested=request.strategy,
+            excludes=self._resolve_excludes(request.artifact_id),
         )
         task = asyncio.create_task(self._run_job(job))
         self._jobs.bind_task(job.job_id, task)
@@ -201,6 +218,7 @@ class TransferService:
             target_path=job.target_path,
             artifact_id=job.artifact_id,
             ssh=self._ssh,
+            excludes=list(job.excludes),
         )
         if self._jobs.find(job.job_id) is None:
             return
@@ -371,6 +389,7 @@ async def _relay(
         source=source,
         target=target,
         chunk_size=int(getattr(settings, "transfer_chunk_size_b", 4194304)),
+        excludes=list(job.excludes),
     )
 
 

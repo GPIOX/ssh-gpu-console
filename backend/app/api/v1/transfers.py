@@ -56,15 +56,18 @@ async def plan_transfer(request: TransferRequest) -> TransferPlan:
 
 
 @router.post("", status_code=202)
-def create_transfer(request: TransferRequest) -> dict[str, str]:
+async def create_transfer(request: TransferRequest) -> dict[str, str]:
     try:
+        # Must run ON the event loop: create() schedules the worker via
+        # asyncio.create_task (a sync def endpoint would execute in the
+        # threadpool, where no loop runs — RuntimeError → 500).
         return _service().create(request)
     except AppError as error:
         raise _http_error(error) from error
 
 
 @router.post("/{job_id}/cancel", status_code=200)
-def cancel_transfer(job_id: str) -> dict[str, str]:
+async def cancel_transfer(job_id: str) -> dict[str, str]:
     try:
         _service().cancel(job_id)
         return {"job_id": job_id, "state": "cancelling"}

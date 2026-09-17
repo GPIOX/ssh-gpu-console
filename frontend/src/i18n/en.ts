@@ -320,6 +320,10 @@ export const en = {
     description: "Description",
     tags: "Tags",
     tagsCommaHint: "comma-separated",
+    editSyncExcludes: "Edit sync excludes",
+    syncExcludes: "Default sync excludes",
+    syncExcludesHint: "rsync/fnmatch patterns; entry names matching any of them are skipped by transfers of this project's artifacts",
+
     artifacts: "Artifacts",
     noArtifactsYet: "No artifacts yet — create one under Datasets or Models.",
     removeProjectTitle: "Remove project {name}?",
@@ -461,6 +465,8 @@ export const en = {
     available: "available",
     unavailable: "unavailable",
     noDirectSsh: "Source server cannot SSH to the target directly",
+    planExcludes: "Skipped by project excludes:",
+
     planning: "checking route…",
     planFailed: "Route check failed",
     create: "Start transfer",

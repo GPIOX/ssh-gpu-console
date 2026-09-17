@@ -23,12 +23,19 @@ curl -s -X POST :8420/api/v1/workspace/projects -H 'Content-Type: application/js
 # attach artifacts (also accepts name/description/tags)
 curl -s -X PATCH :8420/api/v1/workspace/projects/<project_id> \
   -H 'Content-Type: application/json' -d '{"artifact_ids": ["<a1>", "<a2>"]}'
+# default transfer excludes (rsync/fnmatch patterns; relay skips matching
+# entry names, rsync gets --exclude=arg; union across referencing projects)
+curl -s -X PATCH :8420/api/v1/workspace/projects/<project_id> \
+  -H 'Content-Type: application/json' \
+  -d '{"transfer_excludes": ["dataset", "checkpoints", ".git", "__pycache__"]}'
 ```
 
 - `artifact_ids` is the stored, explicit association (validated server-side;
   unknown ids → 409).
 - `launch_config_ids` is DERIVED at read time from launch configs whose
   `project_id` matches — never settable, never stored.
+- `transfer_excludes` (≤32 single-line patterns) is the project's DEFAULT
+  exclusion list; blank entries and duplicates are rejected/collapsed.
 
 ## Artifacts
 

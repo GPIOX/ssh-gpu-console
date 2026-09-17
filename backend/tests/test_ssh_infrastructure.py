@@ -414,3 +414,48 @@ async def test_backoff_delay_is_bounded_and_grows(tmp_path: Path) -> None:
     connection.next_attempt_at = time.monotonic() + 3.0
     assert connection.in_backoff()
     assert 2.0 < connection.backoff_remaining() <= 3.0
+
+
+# ---- SftpTransferSession exception mapping ------------------------------------------
+
+
+def test_sftp_transfer_session_treats_sftp_no_such_file_as_missing() -> None:
+    """asyncssh raises SFTPNoSuchFile (message 'No such file'), which is NOT a
+    builtin FileNotFoundError/OSError subclass. stat()/mkdir() must map it to
+    'missing' instead of letting it kill a transfer (observed in the field:
+    the first missing parent on the target killed a job at 0 bytes)."""
+    from app.ssh.transport import SftpTransferSession
+    from asyncssh.sftp import SFTPNoSuchFile
+
+    existing = {"/home", "/home/user"}
+
+    class FakeSftp:
+        def __init__(self) -> None:
+            self.made: list[str] = []
+
+        async def stat(self, path: str) -> Any:
+            if path in existing:
+                return type("Attrs", (), {"permissions": 0o40755, "size": 4096})()
+            raise SFTPNoSuchFile(2, "No such file")
+
+        async def mkdir(self, path: str) -> None:
+            if path in existing:
+                raise FileExistsError(path)
+            existing.add(path)
+            self.made.append(path)
+
+    fake = FakeSftp()
+    session = SftpTransferSession(None, fake, Settings())  # type: ignore[arg-type]
+
+    info = asyncio.run(session.stat("/home/user"))
+    assert info.exists and info.is_dir
+
+    missing = asyncio.run(session.stat("/home/user/missing"))
+    assert missing.exists is False and missing.is_dir is False
+
+    # Creates ONLY the missing levels; existing ones are neither created nor
+    # re-created; existing dirs reported by the server are accepted.
+    asyncio.run(session.mkdir("/home/user/new/tree"))
+    assert fake.made == ["/home/user/new", "/home/user/new/tree"]
+
+    assert asyncio.run(session.stat("/home/user")).exists is True

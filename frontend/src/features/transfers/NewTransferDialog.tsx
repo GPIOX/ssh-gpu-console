@@ -338,6 +338,18 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
                   </Chip>
                 </div>
                 {plan.reason !== "" && <p className="tf-plan__reason mono">{plan.reason}</p>}
+                {plan.excludes.length > 0 && (
+                  <div className="tf-plan__excludes">
+                    <span className="tf-plan__reason">{t.transfers.planExcludes}</span>
+                    <span className="tf-plan__chips">
+                      {plan.excludes.map((pattern) => (
+                        <Chip key={pattern} mono>
+                          {pattern}
+                        </Chip>
+                      ))}
+                    </span>
+                  </div>
+                )}
               </>
             )}
             {!planning && plan === null && planError !== null && (

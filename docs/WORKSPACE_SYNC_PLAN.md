@@ -98,4 +98,11 @@ queued/planning/running/verifying.
   symlinks are skipped (no path escape); quick verification = size / transferred bytes /
   basic file count (no full-dataset hashing in this phase);
 - state machine: queued → planning → running → verifying → completed | failed | cancelled;
-  retry re-queues; completed/failed history bounded (`transfer_job_history=100`).
+  retry re-queues; completed/failed history bounded (`transfer_job_history=100`);
+- transfer excludes: `ProjectRecord.transfer_excludes` (≤32 single-line rsync/fnmatch
+  patterns, editable in the UI and PATCHable) is the project-level DEFAULT; the effective
+  list for a job is the UNION over the projects referencing the artifact (the copy can
+  only shrink, never grow); rsync receives them as `--exclude=arg` (full rsync semantics,
+  the transfer root itself is never excluded); the relay matches entry NAMES during the
+  walk (`fnmatch`, dot entries `.`/`..` are always filtered); the effective list is shown
+  in the plan preview and carried on the job (`TransferPlan.excludes`/`TransferJob.excludes`).
