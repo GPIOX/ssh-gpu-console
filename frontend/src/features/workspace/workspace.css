@@ -221,11 +221,17 @@
 
 .ws-matrix__present {
   color: var(--healthy);
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 15px;
+  display: inline-block;
+  min-width: 18px;
+  text-align: center;
 }
 
 .ws-matrix__missing {
-  color: var(--text-4);
+  color: var(--text-2);
+  font-size: 14px;
+  font-weight: 700;
 }
 
 /* -- placements --------------------------------------------------------------- */
