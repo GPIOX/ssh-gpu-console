@@ -34,6 +34,8 @@ export interface TransferStateShape {
 
   cancelJob: (jobId: string) => Promise<void>;
   retryJob: (jobId: string) => Promise<void>;
+  /** Clear terminal jobs from RAM history, then refresh the list. Returns the cleared count. */
+  clearHistory: () => Promise<number>;
   /** Queue a job (202), then refresh the list — polling re-arms via loadJobs. */
   createTransfer: (body: TransferRequest) => Promise<string>;
 
@@ -105,6 +107,12 @@ export function createTransferStore() {
       retryJob: async (jobId) => {
         await transfersApi.retry(jobId);
         await get().loadJobs();
+      },
+
+      clearHistory: async () => {
+        const cleared = await transfersApi.clearHistory();
+        await get().loadJobs();
+        return cleared;
       },
 
       createTransfer: async (body) => {

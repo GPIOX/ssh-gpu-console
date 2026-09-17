@@ -75,6 +75,9 @@ class TransferService:
     def active_count(self) -> int:
         return self._jobs.active_count()
 
+    def clear_history(self) -> int:
+        return self._jobs.clear_history()
+
     # ---- planning (creates no job) ------------------------------------------------
 
     def _resolve_excludes(self, artifact_id: str) -> list[str]:

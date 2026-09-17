@@ -137,6 +137,9 @@ first caution below.
 - **Sync needs trust, not just declaration.** The target server must be added
   and online (host key trusted) before a transfer can run; the first sync of
   a big dataset is a good stress test of relay/strategy behavior.
+- **Job history is RAM-only** and clears with a restart; the 传输页's 清空传输
+  历史 button (DELETE /api/v1/transfers) removes terminal records without
+  touching active jobs — use it instead of hunting for a "reset" switch.
 - **Many-small-file datasets are slow through the relay** (per-file SFTP
   round trips over the jump). A ~1 GB dataset with ~7k files takes minutes —
   set expectations, keep the 1 Hz polling patient, and prefer batching the

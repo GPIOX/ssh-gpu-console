@@ -322,7 +322,7 @@ export const en = {
     tagsCommaHint: "comma-separated",
     editSyncExcludes: "Edit sync excludes",
     syncExcludes: "Default sync excludes",
-    syncExcludesHint: "rsync/fnmatch patterns; entry names matching any of them are skipped by transfers of this project's artifacts",
+    syncExcludesHint: "rsync/fnmatch patterns, comma-separated; during transfers of this project's artifacts, entries whose name matches are skipped (the transfer root itself is never excluded) — mainly for code trees, e.g. to leave out dataset/checkpoints",
 
     artifacts: "Artifacts",
     noArtifactsYet: "No artifacts yet — create one under Datasets or Models.",
@@ -452,6 +452,11 @@ export const en = {
     strategyRelay: "Local relay",
     cancelTransfer: "Cancel transfer",
     retryTransfer: "Retry transfer",
+    clearHistory: "Clear history",
+    clearHistoryTitle: "Clear transfer history?",
+    clearHistoryBody:
+      "Removes completed, failed and cancelled jobs from the list. Active transfers are kept; registered assets and placements are untouched.",
+    clearHistoryConfirm: "Clear history",
     empty: "No transfers yet",
     emptyHint: "Sync an artifact to another server via its ⋯ menu in the workspace.",
     error: "Transfer list unavailable",

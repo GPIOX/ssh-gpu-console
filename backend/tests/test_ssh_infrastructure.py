@@ -459,3 +459,60 @@ def test_sftp_transfer_session_treats_sftp_no_such_file_as_missing() -> None:
     assert fake.made == ["/home/user/new", "/home/user/new/tree"]
 
     assert asyncio.run(session.stat("/home/user")).exists is True
+
+
+def test_sftp_transfer_session_rename_overwrites_existing_target() -> None:
+    """Plain SFTP rename fails on an existing destination ('Failure' — seen on
+    every retry over a previously copied tree). posix-rename must be used when
+    the server offers it, with an explicit replace fallback otherwise."""
+    from app.ssh.transport import SftpTransferSession
+    from asyncssh.sftp import SFTPNoSuchFile
+
+    class _PosixSftp:
+        def __init__(self) -> None:
+            self.posix_calls: list[tuple[str, str]] = []
+            self.removed: list[str] = []
+            self.renamed: list[tuple[str, str]] = []
+
+        async def posix_rename(self, source: str, target: str) -> None:
+            self.posix_calls.append((source, target))
+
+        async def remove(self, path: str) -> None:
+            self.removed.append(path)
+
+        async def rename(self, source: str, target: str) -> None:
+            self.renamed.append((source, target))
+
+    fake = _PosixSftp()
+    session = SftpTransferSession(None, fake, Settings())  # type: ignore[arg-type]
+    asyncio.run(session.rename("/a/partial", "/a/final"))
+    assert fake.posix_calls == [("/a/partial", "/a/final")]
+    assert fake.removed == [] and fake.renamed == []
+
+    class _NoPosixSftp:
+        # deliberately lacks posix_rename: attribute access raises AttributeError
+        def __init__(self) -> None:
+            self.removed: list[str] = []
+            self.renamed: list[tuple[str, str]] = []
+            self.target_exists = True
+
+        async def remove(self, path: str) -> None:
+            if not self.target_exists:
+                raise SFTPNoSuchFile(2, "No such file")
+            self.removed.append(path)
+
+        async def rename(self, source: str, target: str) -> None:
+            self.renamed.append((source, target))
+
+    fake2 = _NoPosixSftp()
+    session2 = SftpTransferSession(None, fake2, Settings())  # type: ignore[arg-type]
+    asyncio.run(session2.rename("/a/partial", "/a/target"))
+    assert fake2.removed == ["/a/target"]
+    assert fake2.renamed == [("/a/partial", "/a/target")]
+
+    fake3 = _NoPosixSftp()
+    fake3.target_exists = False
+    session3 = SftpTransferSession(None, fake3, Settings())  # type: ignore[arg-type]
+    asyncio.run(session3.rename("/a/partial", "/a/fresh"))
+    assert fake3.removed == []
+    assert fake3.renamed == [("/a/partial", "/a/fresh")]

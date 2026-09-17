@@ -621,6 +621,9 @@ describe("workspace i18n parity", () => {
     }
     expect(zh.workspace.title).toBe("工作区");
     expect(en.workspace.syncComingSoon).toBe("Transfer is coming in the next release");
+    // Exclude-hint wording: entry root itself is never excluded.
+    expect(en.workspace.syncExcludesHint).toContain("the transfer root itself is never excluded");
+    expect(zh.workspace.syncExcludesHint).toContain("条目根目录本身不受影响");
   });
 
   it("renders catalog rows and the disabled sync-to menu item", async () => {

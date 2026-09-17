@@ -66,6 +66,11 @@ async def create_transfer(request: TransferRequest) -> dict[str, str]:
         raise _http_error(error) from error
 
 
+@router.delete("", status_code=200)
+async def clear_transfer_history() -> dict[str, int]:
+    return {"cleared": _service().clear_history()}
+
+
 @router.post("/{job_id}/cancel", status_code=200)
 async def cancel_transfer(job_id: str) -> dict[str, str]:
     try:

@@ -5,8 +5,8 @@
  * and it is cleared on unmount. Listing never triggers SSH.
  */
 
-import { useEffect } from "react";
-import { Button, EmptyState, ErrorPanel, Panel, Skeleton } from "../../design";
+import { useEffect, useState } from "react";
+import { Button, Dialog, EmptyState, ErrorPanel, Panel, Skeleton } from "../../design";
 import { tf, useT } from "../../i18n";
 import { useTransferStore } from "../../store/transferStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
@@ -25,8 +25,27 @@ export function TransfersPage() {
   const openNewTransfer = useTransferStore((state) => state.openNewTransfer);
   const cancelJob = useTransferStore((state) => state.cancelJob);
   const retryJob = useTransferStore((state) => state.retryJob);
+  const clearHistory = useTransferStore((state) => state.clearHistory);
   const loadArtifacts = useWorkspaceStore((state) => state.loadArtifacts);
   const loadPlacements = useWorkspaceStore((state) => state.loadPlacements);
+
+  // Named confirm dialog for the destructive clear-history action.
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
+
+  const clear = async (): Promise<void> => {
+    setClearing(true);
+    setClearError(null);
+    try {
+      await clearHistory();
+      setConfirmOpen(false);
+    } catch (cause) {
+      setClearError(cause instanceof Error ? cause.message : "request failed");
+    } finally {
+      setClearing(false);
+    }
+  };
 
   useEffect(() => {
     void loadJobs();
@@ -46,6 +65,10 @@ export function TransfersPage() {
     queued: jobs.filter((job) => job.state === "queued").length,
     completed: jobs.filter((job) => job.state === "completed").length,
   };
+  // Clearable = terminal (completed/failed/cancelled) jobs in the RAM list.
+  const terminalCount = jobs.filter(
+    (job) => job.state === "completed" || job.state === "failed" || job.state === "cancelled",
+  ).length;
 
   return (
     <div className="tf-page">
@@ -56,6 +79,9 @@ export function TransfersPage() {
           {tf(t.transfers.countCompleted, { n: counts.completed })}
         </span>
         <div className="tf-head__spacer" />
+        <Button onClick={() => setConfirmOpen(true)} disabled={terminalCount === 0}>
+          {t.transfers.clearHistory}
+        </Button>
         <Button variant="primary" onClick={() => openNewTransfer()}>
           {t.transfers.newTransfer}
         </Button>
@@ -108,6 +134,23 @@ export function TransfersPage() {
       )}
 
       <NewTransferDialog open={dialogOpen} />
+
+      <Dialog
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        title={t.transfers.clearHistoryTitle}
+      >
+        <p className="ws-confirm__text">{t.transfers.clearHistoryBody}</p>
+        {clearError !== null && <p className="field__error">{clearError}</p>}
+        <div className="ws-dialog__actions">
+          <Button onClick={() => setConfirmOpen(false)} disabled={clearing}>
+            {t.common.cancel}
+          </Button>
+          <Button variant="primary" disabled={clearing} onClick={() => void clear()}>
+            {t.transfers.clearHistoryConfirm}
+          </Button>
+        </div>
+      </Dialog>
     </div>
   );
 }

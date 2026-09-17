@@ -310,9 +310,21 @@ class SftpTransferSession:
         return await self._sftp.open(path, "wb")
 
     async def rename(self, source: str, target: str) -> None:
+        """Replace the destination atomically when possible.
+
+        Plain SFTP rename FAILS when the target already exists (field-observed:
+        every retry over an existing tree died with 'Failure' on the first
+        file). posix-rename@openssh.com allows the overwrite; servers without
+        the extension get an explicit remove+rename — updating the file being
+        transferred is copy/UPDATE semantics, not a delete of untouched data.
+        """
         try:
-            await self._sftp.rename(source, target)
-        except OSError:
+            await self._sftp.posix_rename(source, target)
+        except (AttributeError, SFTPError):
+            try:
+                await self._sftp.remove(target)
+            except _MISSING_SFTP:
+                pass
             await self._sftp.rename(source, target)
 
     async def remove(self, path: str) -> None:

@@ -104,6 +104,16 @@ class JobRegistry:
     def history(self) -> list[TransferJob]:
         return list(self._history)
 
+    def clear_history(self) -> int:
+        """Drop every terminal-state entry from history; active jobs stay."""
+        terminal = (TransferState.COMPLETED, TransferState.FAILED, TransferState.CANCELLED)
+        kept = [job for job in self._history if job.state not in terminal]
+        removed = len(self._history) - len(kept)
+        if removed:
+            self._history.clear()
+            self._history.extend(kept)
+        return removed
+
     def all_jobs(self) -> list[TransferJob]:
         return [*self.active_snapshot(), *self.history()]
 

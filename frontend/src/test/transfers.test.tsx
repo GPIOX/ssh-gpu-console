@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { parseHash, routeToHash } from "../shell/routes";
 import { transfersApi } from "../services/transfersApi";
 import { workspaceApi } from "../services/workspaceApi";
@@ -264,6 +264,41 @@ describe("TransfersPage", () => {
     render(<TransfersPage />);
     expect(await screen.findByText("1 active · 1 waiting · 1 completed")).toBeTruthy();
   });
+
+  it("disables clear-history while only active jobs exist", async () => {
+    resetStores();
+    vi.spyOn(transfersApi, "listJobs").mockResolvedValue([makeJob()]);
+    render(<TransfersPage />);
+    await screen.findByText("DINOv2:b");
+    const button = screen.getByRole("button", { name: "Clear history" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    // No destructive dialog is reachable from a disabled control.
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("clears terminal history through the named confirm dialog", async () => {
+    resetStores();
+    const listSpy = vi
+      .spyOn(transfersApi, "listJobs")
+      .mockResolvedValue([makeJob({ state: "completed" })]);
+    const clearSpy = vi.spyOn(transfersApi, "clearHistory").mockResolvedValue(1);
+    render(<TransfersPage />);
+    await screen.findByText("DINOv2:b");
+
+    const button = screen.getByRole("button", { name: "Clear history" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+
+    // Named confirm dialog (never window.confirm): localized title + body.
+    const dialog = await screen.findByRole("dialog", { name: "Clear transfer history?" });
+    expect(
+      within(dialog).getByText(/Removes completed, failed and cancelled jobs/),
+    ).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Clear history" }));
+    await waitFor(() => expect(clearSpy).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(listSpy.mock.calls.length).toBe(2)); // initial load + refresh
+  });
 });
 
 describe("NewTransferDialog", () => {
@@ -406,5 +441,12 @@ describe("transfers i18n parity", () => {
     expect(zh.transfers.etaMinutes).toBe("剩余约 {n} 分钟");
     expect(zh.transfers.cancelTransfer).toBe("取消传输");
     expect(zh.transfers.retryTransfer).toBe("重试传输");
+    expect(en.transfers.clearHistory).toBe("Clear history");
+    expect(zh.transfers.clearHistory).toBe("清空传输历史");
+    expect(zh.transfers.clearHistoryTitle).toBe("清空传输历史？");
+    expect(zh.transfers.clearHistoryBody).toBe(
+      "将清除已完成、失败、已取消的传输记录；进行中的传输与已登记的资产、放置均不受影响。",
+    );
+    expect(zh.transfers.clearHistoryConfirm).toBe("清空记录");
   });
 });

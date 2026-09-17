@@ -29,6 +29,7 @@ from app.transfer.planner import (
 from app.transfer.service import TransferService
 from app.transfer.state import JobRegistry
 from app.transfer.strategies.local_relay import partial_name, relay_transfer
+from app.transfer.verifier import quick_verify
 from app.workspace.repository import WorkspaceRepository
 from app.workspace.service import WorkspaceService
 
@@ -603,3 +604,212 @@ async def test_relay_single_file_transfer_ignores_excludes() -> None:
         excludes=("*.bin",),
     )
     assert dst.files["~/mirror/model.bin"] == b"w" * 512
+
+
+# ---- quick verify -------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_quick_verify_tolerates_files_added_mid_transfer() -> None:
+    """Field regression: a live tree changed between the relay's count walk
+    (files_total=277) and its copy walk (files_done=278); quick_verify must
+    re-walk and pass when every current source file exists on the target."""
+    src, dst = MemFS(), MemFS()
+    src.add_dir("~/app")
+    src.add_file("~/app/a.py", b"a")
+    src.add_file("~/app/b.py", b"b")
+    for path in ("~/mirror", "~/mirror/app"):
+        dst.add_dir(path)
+    dst.add_file("~/mirror/app/a.py", b"a")
+    dst.add_file("~/mirror/app/b.py", b"b")
+    dst.add_file("~/mirror/app/c-late.py", b"c")  # appeared after the count walk
+
+    job = _job(source_path="~/app", target_path="~/mirror/app", artifact_label="x")
+    job.files_total = 2
+    job.files_done = 3
+
+    ok, reason = await quick_verify(
+        job=job, source=FakeTransferSession(src), target=FakeTransferSession(dst)
+    )
+    assert ok, reason
+    assert "re-verified" in reason
+
+
+@pytest.mark.asyncio
+async def test_quick_verify_detects_missing_file() -> None:
+    """Counters agree but the tree changed underneath: a mirrored file is
+    absent on the target, so the walk must catch it and name the path."""
+    src, dst = MemFS(), MemFS()
+    src.add_dir("~/app")
+    src.add_file("~/app/a.py", b"a")
+    src.add_file("~/app/b.py", b"b")
+    dst.add_dir("~/mirror")
+    dst.add_dir("~/mirror/app")
+    dst.add_file("~/mirror/app/a.py", b"a")
+
+    job = _job(source_path="~/app", target_path="~/mirror/app", artifact_label="x")
+    job.files_total = 2
+    job.files_done = 2
+
+    ok, reason = await quick_verify(
+        job=job, source=FakeTransferSession(src), target=FakeTransferSession(dst)
+    )
+    assert not ok
+    assert "~/mirror/app/b.py" in reason
+
+
+@pytest.mark.asyncio
+async def test_quick_verify_excludes_are_not_required_on_target() -> None:
+    """Excluded entries are never counted, never copied — the re-walk must
+    skip them too, so an absent-on-target excluded subtree passes."""
+    src, dst = MemFS(), MemFS()
+    src.add_dir("~/app")
+    src.add_dir("~/app/dataset")
+    src.add_file("~/app/dataset/D1.bin", b"heavy" * 100)
+    src.add_file("~/app/main.py", b"code")
+    dst.add_dir("~/mirror")
+    dst.add_dir("~/mirror/app")
+    dst.add_file("~/mirror/app/main.py", b"code")
+
+    job = _job(
+        source_path="~/app",
+        target_path="~/mirror/app",
+        artifact_label="x",
+    )
+    job.excludes = ["dataset"]
+    job.files_total = 1
+    job.files_done = 1
+
+    ok, reason = await quick_verify(
+        job=job, source=FakeTransferSession(src), target=FakeTransferSession(dst)
+    )
+    assert ok, reason
+
+
+# ---- clear history -------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_registry_clear_history_keeps_active_jobs() -> None:
+    registry = JobRegistry(10)
+    completed = registry.create(
+        artifact_id="a",
+        artifact_label="A",
+        source_server_id="srv-a",
+        source_path="~/a",
+        target_server_id="srv-b",
+        target_path="~/a",
+        strategy_requested=TransferStrategy.LOCAL_RELAY,
+    )
+    failed = registry.create(
+        artifact_id="b",
+        artifact_label="B",
+        source_server_id="srv-a",
+        source_path="~/b",
+        target_server_id="srv-b",
+        target_path="~/b",
+        strategy_requested=TransferStrategy.LOCAL_RELAY,
+    )
+    cancelled = registry.create(
+        artifact_id="c",
+        artifact_label="C",
+        source_server_id="srv-a",
+        source_path="~/c",
+        target_server_id="srv-b",
+        target_path="~/c",
+        strategy_requested=TransferStrategy.LOCAL_RELAY,
+    )
+    running = registry.create(
+        artifact_id="d",
+        artifact_label="D",
+        source_server_id="srv-a",
+        source_path="~/d",
+        target_server_id="srv-b",
+        target_path="~/d",
+        strategy_requested=TransferStrategy.LOCAL_RELAY,
+    )
+    registry.transition(completed, TransferState.COMPLETED)
+    registry.transition(failed, TransferState.FAILED)
+    registry.transition(cancelled, TransferState.CANCELLED)
+    registry.transition(running, TransferState.RUNNING)
+
+    assert registry.clear_history() == 3
+    assert registry.find(completed.job_id) is None
+    assert registry.find(failed.job_id) is None
+    assert registry.find(cancelled.job_id) is None
+    assert registry.find(running.job_id) is running
+    assert [job.job_id for job in registry.history()] == []
+    assert registry.clear_history() == 0
+
+
+def test_clear_transfer_history_api(tmp_path: Path) -> None:
+    import time
+
+    from app.core.lifecycle import AppContext
+    from app.main import create_app
+    from app.servers.registry import get_default_registry
+    from app.telemetry.service import TelemetryService
+    from fastapi.testclient import TestClient
+
+    class _DummyExecutor:
+        async def run(self, _command: str, *, timeout_s: float = 10.0) -> RemoteCommandResult:
+            return RemoteCommandResult(0, "", "", 1.0)
+
+        async def close(self) -> None:
+            return None
+
+    fs_by_server = {"srv-a": MemFS(), "srv-b": MemFS()}
+    fs_by_server["srv-a"].add_dir("~/data")
+    fs_by_server["srv-a"].add_file("~/data/d.bin", b"payload" * 1000)
+    service, workspace, ids = _service(tmp_path, fs_by_server)
+    artifact = workspace.create_artifact(ArtifactCreate(kind="dataset", name="IVMSD"))
+    placement = workspace.create_placement(
+        PlacementCreate(
+            artifact_id=artifact.artifact_id,
+            server_id=ids["srv-a"],
+            remote_path="~/data",
+        )
+    )
+    context = AppContext(
+        service._settings,
+        ssh=service._ssh,  # type: ignore[arg-type]
+        telemetry=TelemetryService(
+            service._settings,
+            get_default_registry(),
+            lambda _sid, _record: _DummyExecutor(),  # type: ignore[arg-type,return-value]
+        ),
+        workspace=workspace,
+        transfers=service,
+    )
+    client = TestClient(create_app(service._settings, context=context))
+    with client:
+        response = client.post(
+            "/api/v1/transfers",
+            json={
+                "artifact_id": artifact.artifact_id,
+                "source_placement_id": placement.placement_id,
+                "target_server_id": ids["srv-b"],
+                "target_path": "~/models/IVMSD",
+                "strategy": "local_relay",
+            },
+        )
+        assert response.status_code == 202, response.text
+        job_id = response.json()["job_id"]
+
+        deadline = time.monotonic() + 5.0
+        state = None
+        payload = None
+        while time.monotonic() < deadline:
+            payload = client.get(f"/api/v1/transfers/{job_id}").json()
+            state = payload["state"]
+            if state in ("completed", "failed"):
+                break
+            time.sleep(0.02)
+        assert state == "completed", payload
+
+        cleared = client.delete("/api/v1/transfers")
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["cleared"] >= 1
+
+        listing = client.get("/api/v1/transfers").json()
+        assert job_id not in {job["job_id"] for job in listing}

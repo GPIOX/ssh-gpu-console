@@ -111,9 +111,12 @@ curl -s -X POST :8420/api/v1/transfers/plan -H 'Content-Type: application/json' 
        "target_path": "/home/demo/data/D1", "strategy": "auto"}'
 # create (202, job runs in background; RAM-only state)
 curl -s -X POST :8420/api/v1/transfers -d '…same body…'
-# list / detail / cancel / retry
+# list / detail / cancel / retry / clear history
 curl -s :8420/api/v1/transfers ; curl -s :8420/api/v1/transfers/<job_id>
 curl -s -X POST :8420/api/v1/transfers/<job_id>/cancel ; curl -s -X POST :8420/api/v1/transfers/<job_id>/retry
+# DELETE clears ONLY terminal history (completed/failed/cancelled); active
+# jobs and their tasks are untouched; returns {"cleared": <n>}.
+curl -s -X DELETE :8420/api/v1/transfers
 ```
 
 Fixed rsync flags (`-a -r -t -p -o -g --partial --partial-dir=.sgc-rsync-partial

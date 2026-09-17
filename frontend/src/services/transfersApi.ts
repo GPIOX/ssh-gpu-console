@@ -151,7 +151,7 @@ export function normalizeTransferPlan(raw: unknown): TransferPlan | null {
 
 // -- transport -----------------------------------------------------------------
 
-type Method = "GET" | "POST";
+type Method = "GET" | "POST" | "DELETE";
 
 function detailFromErrorBody(raw: unknown, fallback: string): string {
   if (!isRecord(raw)) return fallback;
@@ -246,5 +246,13 @@ export const transfersApi = {
     const jobIdOut = isRecord(raw) ? str(raw.job_id) : null;
     if (jobIdOut === null) throw invalidPayload("transfer job id");
     return jobIdOut;
+  },
+
+  /** Drop terminal (completed/failed/cancelled) jobs from RAM history; active jobs are untouched. Returns {"cleared": n}. */
+  async clearHistory(): Promise<number> {
+    const raw = await request("/transfers", "DELETE");
+    const cleared = isRecord(raw) ? intOrNull(raw.cleared) : null;
+    if (cleared === null) throw invalidPayload("cleared count");
+    return cleared;
   },
 };
