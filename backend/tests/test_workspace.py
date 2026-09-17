@@ -20,6 +20,7 @@ from app.models.workspace import (
     LaunchConfigCreate,
     PlacementCreate,
     ProjectCreate,
+    ProjectPatch,
     ServerRootsUpdate,
 )
 from app.persistence.json_store import JsonFileStore
@@ -174,6 +175,32 @@ def test_launch_config_structured_and_cascades(tmp_path: Path) -> None:
         )
     service.delete_project(project.project_id)
     assert service.launch_configs() == []  # cascade on project delete
+
+
+def test_project_launch_config_ids_are_derived(tmp_path: Path) -> None:
+    service, _repo = make_service(tmp_path)
+    artifact = service.create_artifact(ArtifactCreate(kind="model", name="DINOv2-B"))
+    project = service.create_project(ProjectCreate(name="CMOS"))
+    assert project.launch_config_ids == []
+
+    config = service.create_launch_config(
+        LaunchConfigCreate(
+            project_id=project.project_id,
+            name="train",
+            program="python",
+            required_artifact_ids=[artifact.artifact_id],
+        )
+    )
+    # The count on the project row must reflect reality without a second
+    # write path (bug: launch configs existed but projects showed 0).
+    assert service.project(project.project_id).launch_config_ids == [config.launch_config_id]
+    assert service.projects()[0].launch_config_ids == [config.launch_config_id]
+    assert service.update_project(
+        project.project_id, ProjectPatch(name="CMOS v2")
+    ).launch_config_ids == [config.launch_config_id]
+
+    service.delete_launch_config(config.launch_config_id)
+    assert service.project(project.project_id).launch_config_ids == []
 
 
 def test_server_roots_and_suggestion(tmp_path: Path) -> None:

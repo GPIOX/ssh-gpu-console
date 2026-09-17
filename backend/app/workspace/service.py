@@ -49,7 +49,7 @@ class WorkspaceService:
             created_at=_stamp(),
             updated_at=_stamp(),
         )
-        return self._repo.insert_project(record)
+        return self._with_launch_config_ids(self._repo.insert_project(record))
 
     def update_project(self, project_id: str, request: ProjectPatch) -> ProjectRecord:
         current = self._repo.get_project(project_id)
@@ -59,7 +59,7 @@ class WorkspaceService:
         updated = ProjectRecord.model_validate(
             {**current.model_dump(mode="python"), **patch, "updated_at": _stamp()}
         )
-        return self._repo.replace_project(updated)
+        return self._with_launch_config_ids(self._repo.replace_project(updated))
 
     def delete_project(self, project_id: str) -> None:
         # Metadata-only: artifacts and placements are untouched; launch configs
@@ -67,10 +67,25 @@ class WorkspaceService:
         self._repo.remove_project(project_id)
 
     def projects(self) -> list[ProjectRecord]:
-        return self._repo.projects()
+        return [self._with_launch_config_ids(p) for p in self._repo.projects()]
 
     def project(self, project_id: str) -> ProjectRecord:
-        return self._repo.get_project(project_id)
+        return self._with_launch_config_ids(self._repo.get_project(project_id))
+
+    def _with_launch_config_ids(self, project: ProjectRecord) -> ProjectRecord:
+        """launch_config_ids is DERIVED, never stored: the launch config owns
+        the project_id association, so the project row count stays true without
+        a second write path that can go stale."""
+        derived = [
+            config.launch_config_id
+            for config in self._repo.launch_configs()
+            if config.project_id == project.project_id
+        ]
+        if derived == project.launch_config_ids:
+            return project
+        return ProjectRecord.model_validate(
+            {**project.model_dump(mode="python"), "launch_config_ids": derived}
+        )
 
     # ---- artifacts ----------------------------------------------------------
 
