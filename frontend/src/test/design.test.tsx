@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
   Button,
   Chip,
@@ -163,6 +163,64 @@ describe("Dialog", () => {
       </Dialog>,
     );
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("puts initial focus on the first text field, not the header close button", async () => {
+    render(
+      <Dialog open onClose={() => undefined} title="Add project">
+        <input aria-label="Name" />
+      </Dialog>,
+    );
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByLabelText("Name"));
+    });
+  });
+
+  it("keeps field focus when the host re-renders with a fresh onClose closure", async () => {
+    const onClose = vi.fn();
+    const view = render(
+      <Dialog open onClose={onClose} title="Add project">
+        <input aria-label="Name" />
+      </Dialog>,
+    );
+    const name = screen.getByLabelText("Name") as HTMLInputElement;
+    await waitFor(() => {
+      expect(document.activeElement).toBe(name);
+    });
+    fireEvent.change(name, { target: { value: "dinov2" } });
+
+    // Hosts like ProjectsTab re-render every clock tick and pass a new inline
+    // closure — the dialog must not steal focus back out of the field. The
+    // steal (when present) fires inside a rAF, so wait one frame out.
+    view.rerender(
+      <Dialog open onClose={() => undefined} title="Add project">
+        <input aria-label="Name" />
+      </Dialog>,
+    );
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    expect(document.activeElement).toBe(name);
+    expect(name.value).toBe("dinov2");
+  });
+
+  it("Escape still closes after the onClose closure changed mid-flight", async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const view = render(
+      <Dialog open onClose={first} title="Add project">
+        <input aria-label="Name" />
+      </Dialog>,
+    );
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByLabelText("Name"));
+    });
+    view.rerender(
+      <Dialog open onClose={second} title="Add project">
+        <input aria-label="Name" />
+      </Dialog>,
+    );
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
   });
 });
 

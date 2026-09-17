@@ -32,6 +32,15 @@ function trapTab(event: KeyboardEvent, root: HTMLElement | null): void {
   }
 }
 
+function isTextEntry(element: HTMLElement): boolean {
+  if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) return true;
+  if (element instanceof HTMLInputElement) {
+    const type = element.type;
+    return type !== "checkbox" && type !== "radio" && type !== "button" && type !== "submit" && type !== "hidden";
+  }
+  return false;
+}
+
 export interface DialogProps {
   open: boolean;
   onClose: () => void;
@@ -46,18 +55,30 @@ export interface DialogProps {
 export function Dialog({ open, onClose, title, children, width = 460, className }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+
+  // Hosts re-render while the dialog is open (clock ticks, store updates) and
+  // pass a fresh inline closure each time; the focus effect below must key on
+  // `open` alone or every re-render would yank focus back out of the form
+  // fields to the panel header.
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) return;
     restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const raf = requestAnimationFrame(() => {
-      const first = panelRef.current ? focusables(panelRef.current)[0] : undefined;
-      first?.focus();
+      const panel = panelRef.current;
+      if (panel === null) return;
+      const items = focusables(panel);
+      const target = items.find(isTextEntry) ?? items[0];
+      target?.focus();
     });
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.stopPropagation();
-        onClose();
+        onCloseRef.current();
       } else if (event.key === "Tab") {
         trapTab(event, panelRef.current);
       }
@@ -68,7 +89,7 @@ export function Dialog({ open, onClose, title, children, width = 460, className 
       document.removeEventListener("keydown", onKeyDown);
       restoreFocusRef.current?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return createPortal(
