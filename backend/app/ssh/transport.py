@@ -185,6 +185,9 @@ async def _connect(
         # Pass IdentityFile paths through; key material is never copied.
         kwargs["client_keys"] = [str(path) for path in params.identity_files]
     if params.proxy_jump:
+        # Hops arrive PRE-RESOLVED ("[user@]host[:port]" via our resolver):
+        # asyncssh resolves tunnel strings by DNS alone and must never see a
+        # raw config alias (it would fail with getaddrinfo Errno 8).
         kwargs["tunnel"] = params.proxy_jump
     # NOTE: the user's ssh_config is intentionally NOT passed to asyncssh:
     # our resolver already extracted host/user/port/IdentityFile, and

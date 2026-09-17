@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.servers.discovery import SSHConfigDiscovery
 from app.ssh.config_resolver import SSHConfigResolver, resolve_connect_params
+from app.ssh.errors import ConnectError
 
 CFG = """# personal
 Host github.com
@@ -26,6 +27,47 @@ Host alpha4090 beta3090
 Host jump-host
     HostName bastion.example.com
     ProxyJump relay01
+
+Host relay01
+    HostName 192.0.2.10
+    User ops
+    Port 2201
+
+Host relay02
+    HostName 192.0.2.11
+    User ops2
+    Port 2202
+
+Host relay03
+    HostName 192.0.2.12
+    ProxyJump edge-gw
+
+Host edge-gw
+    HostName 192.0.2.9
+    User edge
+    Port 2222
+
+Host jump-nested
+    HostName target.example.com
+    ProxyJump relay03
+
+Host jump-multi
+    HostName target.example.com
+    ProxyJump relay01,relay02
+
+Host jump-concrete
+    HostName target.example.com
+    ProxyJump ops@192.0.2.9:2203
+
+Host jump-none
+    HostName target.example.com
+    ProxyJump none
+
+Host cycle-a
+    ProxyJump cycle-b
+
+Host cycle-b
+    ProxyJump cycle-a
 
 Host *
     ServerAliveInterval 60
@@ -73,6 +115,55 @@ def test_multi_alias_block(tmp_path: Path) -> None:
 def test_proxy_jump(tmp_path: Path) -> None:
     resolver = write_cfg(tmp_path)
     assert resolver.resolve("jump-host").proxy_jump == "relay01"
+
+
+def test_proxy_jump_alias_resolved_to_concrete_hop(tmp_path: Path) -> None:
+    # asyncssh resolves tunnel hop strings by DNS alone, so the raw alias
+    # must never reach the transport (it failed with getaddrinfo Errno 8).
+    resolver = write_cfg(tmp_path)
+    params = resolve_connect_params("jump-host", resolver)
+    assert params.proxy_jump == "ops@192.0.2.10:2201"
+
+
+def test_proxy_jump_multi_hop_preserves_order(tmp_path: Path) -> None:
+    resolver = write_cfg(tmp_path)
+    params = resolve_connect_params("jump-multi", resolver)
+    assert params.proxy_jump == "ops@192.0.2.10:2201,ops2@192.0.2.11:2202"
+
+
+def test_proxy_jump_nested_prepends_deepest_hop_first(tmp_path: Path) -> None:
+    # relay03 itself jumps through edge-gw, so edge-gw is the first hop.
+    resolver = write_cfg(tmp_path)
+    params = resolve_connect_params("jump-nested", resolver)
+    assert params.proxy_jump == "edge@192.0.2.9:2222,192.0.2.12"
+
+
+def test_proxy_jump_cycle_detected(tmp_path: Path) -> None:
+    import pytest
+
+    resolver = write_cfg(tmp_path)
+    with pytest.raises(ConnectError) as exc_info:
+        resolve_connect_params("cycle-a", resolver)
+    assert "cycle" in str(exc_info.value)
+
+
+def test_proxy_jump_none_dropped(tmp_path: Path) -> None:
+    resolver = write_cfg(tmp_path)
+    assert resolve_connect_params("jump-none", resolver).proxy_jump is None
+
+
+def test_proxy_jump_concrete_spec_passes_through(tmp_path: Path) -> None:
+    resolver = write_cfg(tmp_path)
+    params = resolve_connect_params("jump-concrete", resolver)
+    assert params.proxy_jump == "ops@192.0.2.9:2203"
+
+
+def test_alias_matching_case_insensitive(tmp_path: Path) -> None:
+    # OpenSSH matches Host patterns case-insensitively; typing "Alpha4090"
+    # (or any casing) must resolve the same config block.
+    resolver = write_cfg(tmp_path)
+    assert resolver.resolve("ALPHA4090").user == "train"
+    assert resolver.matches("Jump-Host") is True
 
 
 def test_unknown_alias_defaults(tmp_path: Path) -> None:

@@ -5,7 +5,10 @@ Supported subset: ``Host`` blocks with the directives this product consumes,
 first-value-wins semantics, ``%h``/``%n``/``%d`` expansion, whitespace-preceded
 inline comments, and OpenSSH's ``Keyword=value`` syntax. ``Match`` blocks are
 not evaluated; their directives are ignored entirely and never attributed to
-the preceding ``Host`` block. The config is never written.
+the preceding ``Host`` block. ``ProxyJump`` chains are resolved hop-by-hop
+through this same config (aliases → concrete ``[user@]host:port``, nested
+jumps prepend, cycles rejected) because the transport's SSH library resolves
+tunnel strings by DNS alone. The config is never written.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.core.logging import get_logger
+from app.ssh.errors import ConnectError, SshErrorCode
 
 logger = get_logger("ssh.config")
 
@@ -145,11 +149,14 @@ class SSHConfigResolver:
 
     @staticmethod
     def _matches(patterns: list[str], alias: str) -> bool:
+        # OpenSSH matches Host patterns case-insensitively (hostnames are
+        # case-insensitive in DNS); usernames are not part of this matching.
+        subject = alias.casefold()
         positive = False
         for pattern in patterns:
             negated = pattern.startswith("!")
-            expression = pattern[1:] if negated else pattern
-            if fnmatch.fnmatchcase(alias, expression):
+            expression = (pattern[1:] if negated else pattern).casefold()
+            if fnmatch.fnmatchcase(subject, expression):
                 if negated:
                     return False
                 positive = True
@@ -221,6 +228,74 @@ class SSHConfigResolver:
         return os.path.expandvars(os.path.expanduser(expanded))
 
 
+def _split_hop(token: str) -> tuple[str | None, str, int | None]:
+    """Split one ProxyJump hop ``[user@]host[:port]`` into its parts.
+
+    Bracketed IPv6 (``[fd00::1]:22``) is supported; a trailing colon that
+    cannot terminate a port (bare IPv6 without brackets) stays in the host.
+    """
+
+    user: str | None = None
+    rest = token
+    if "@" in rest:
+        before, _, after = rest.rpartition("@")
+        user = before or None
+        rest = after
+    if rest.startswith("["):
+        close = rest.find("]")
+        if close == -1:
+            return user, rest, None
+        host = rest[1:close]
+        tail = rest[close + 1 :]
+        port = int(tail[1:]) if tail.startswith(":") and tail[1:].isdigit() else None
+        return user, host, port
+    candidate, sep, port_str = rest.rpartition(":")
+    if sep and candidate and port_str.isdigit():
+        return user, candidate, int(port_str)
+    return user, rest, None
+
+
+def resolve_proxy_jump(
+    spec: str, resolver: SSHConfigResolver, seen: frozenset[str] = frozenset()
+) -> str:
+    """Expand a ProxyJump spec into concrete ``[user@]host[:port]`` hops.
+
+    asyncssh resolves tunnel hop strings by DNS alone (its ssh_config load is
+    disabled), so every hop alias must be substituted here before the spec is
+    handed to the transport. Nested ProxyJump entries prepend their own hops
+    (deepest first), matching OpenSSH's left-to-right hop order. ``none`` is
+    dropped; concrete addresses pass through.
+    """
+
+    hops: list[str] = []
+    for raw in spec.split(","):
+        token = raw.strip()
+        if not token or token.casefold() == "none":
+            continue
+        user, host, port = _split_hop(token)
+        entry = resolver.resolve(host)
+        effective_host = entry.hostname or host
+        effective_user = user if user is not None else entry.user
+        effective_port = port if port is not None else (entry.port or 22)
+        if effective_host.casefold() in seen:
+            raise ValueError(f"proxy jump cycle detected at {effective_host!r}")
+        effective_seen = seen | {effective_host.casefold()}
+        hop = f"{effective_user}@" if effective_user else ""
+        if ":" in effective_host and effective_port != 22:
+            hop += f"[{effective_host}]:{effective_port}"
+        else:
+            hop += effective_host
+            if effective_port != 22:
+                hop += f":{effective_port}"
+        inner_resolved = (
+            resolve_proxy_jump(entry.proxy_jump, resolver, effective_seen)
+            if entry.proxy_jump
+            else ""
+        )
+        hops = (inner_resolved.split(",") if inner_resolved else []) + hops + [hop]
+    return ",".join(hops)
+
+
 def resolve_connect_params(
     server_host: str,
     resolver: SSHConfigResolver | None = None,
@@ -241,12 +316,18 @@ def resolve_connect_params(
         if (entry.hostname or entry.user or entry.port or entry.identity_files or entry.proxy_jump)
         else "default"
     )
+    jump_chain: str | None = entry.proxy_jump
+    if jump_chain is not None:
+        try:
+            jump_chain = resolve_proxy_jump(jump_chain, active_resolver) or None
+        except ValueError as error:
+            raise ConnectError(SshErrorCode.UNKNOWN, str(error), retryable=False) from error
     return ConnectParams(
         host=host,
         port=effective_port,
         username=effective_username,
         identity_files=existing_keys,
-        proxy_jump=entry.proxy_jump,
+        proxy_jump=jump_chain,
         source=source,
         config_path=active_resolver.path,
         original_host=server_host,
