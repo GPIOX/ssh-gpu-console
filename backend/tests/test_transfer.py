@@ -247,7 +247,9 @@ class _FakeLongCommand:
         self._exit = exit_code
         self.closed = False
 
-    async def run(self, command: str, *, timeout_s: float, on_stdout: Any = None) -> int:
+    async def run(
+        self, command: str, *, timeout_s: float, on_stdout: Any = None, on_stderr: Any = None
+    ) -> int:
         self._calls.append(command)
         return self._exit
 

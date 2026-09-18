@@ -2,7 +2,12 @@
  * New transfer dialog. Artifact → source placement (filtered to the artifact)
  * → target server → target path (auto-suggested from the server's kind root
  * + name:version until the user edits it) → method (自动/直接同步/本机中转,
- * default 自动). Every field change debounce-posts /transfers/plan and shows
+ * default 自动). The target suggestion prefers the artifact's project peers —
+ * servers that host a placement of any artifact of a project containing the
+ * selected artifact (minus the source): the current choice is kept when it is
+ * already a peer, otherwise the first enabled peer wins; without peers only a
+ * target that is unset or collides with the source is re-aimed. Every field
+ * change debounce-posts /transfers/plan and shows
  * per-method availability + reason — planning is an explicit SSH preflight,
  * so it only runs on deliberate, complete input. The preview also surfaces the
  * preflight's space warning (or, quietly, the target's free space) and the
@@ -24,7 +29,11 @@ import type {
   VerifyMode,
 } from "../../types/transfers";
 import type { ServerRecord } from "../../types/models";
-import type { ArtifactRecord } from "../../types/workspace";
+import type {
+  ArtifactRecord,
+  PlacementRecord,
+  ProjectRecord,
+} from "../../types/workspace";
 import { artifactLabel } from "../workspace/shared";
 import { cx } from "../../utils/cx";
 import "./transfers.css";
@@ -50,6 +59,63 @@ function strategyLabel(t: ReturnType<typeof useT>, strategy: TransferStrategy): 
 function firstTargetServer(servers: ServerRecord[], exclude: string | undefined): string {
   const enabled = servers.filter((s) => s.enabled && s.server_id !== exclude);
   return enabled[0]?.server_id ?? "";
+}
+
+/**
+ * Peer deployment context: distinct servers hosting a placement of any
+ * artifact that shares a project with the selected artifact (all of the
+ * project's artifact_ids count), minus the source server. Order follows the
+ * placements list; callers pick by servers-list order.
+ */
+function peerServerIds(
+  artifactId: string,
+  projects: ProjectRecord[],
+  placements: PlacementRecord[],
+  sourceServerId: string | undefined,
+): string[] {
+  const projectArtifactIds = new Set<string>();
+  for (const project of projects) {
+    if (project.artifact_ids.includes(artifactId)) {
+      for (const id of project.artifact_ids) projectArtifactIds.add(id);
+    }
+  }
+  if (projectArtifactIds.size === 0) return [];
+  const peers: string[] = [];
+  for (const placement of placements) {
+    const serverId = placement.server_id;
+    if (
+      serverId !== sourceServerId &&
+      projectArtifactIds.has(placement.artifact_id) &&
+      !peers.includes(serverId)
+    ) {
+      peers.push(serverId);
+    }
+  }
+  return peers;
+}
+
+/**
+ * Target suggestion for a (newly selected) artifact. With peer servers, the
+ * current target survives only if it is itself a peer; otherwise the first
+ * peer that is an enabled server is taken (servers-list order). Without
+ * peers, the v1 rule: re-aim only when the target is unset or collides with
+ * the source.
+ */
+function suggestedTargetServer(
+  currentTarget: string,
+  peers: string[],
+  servers: ServerRecord[],
+  sourceServerId: string | undefined,
+): string {
+  if (peers.length > 0) {
+    if (peers.includes(currentTarget)) return currentTarget;
+    const enabledPeer = servers.find((s) => s.enabled && peers.includes(s.server_id));
+    if (enabledPeer !== undefined) return enabledPeer.server_id;
+  }
+  if (currentTarget === "" || currentTarget === sourceServerId) {
+    return firstTargetServer(servers, sourceServerId);
+  }
+  return currentTarget;
 }
 
 function placementSourceLabel(
@@ -100,6 +166,7 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
 
   const artifacts = useWorkspaceStore((state) => state.artifacts);
   const placements = useWorkspaceStore((state) => state.placements);
+  const projects = useWorkspaceStore((state) => state.projects);
   const serverRoots = useWorkspaceStore((state) => state.serverRoots);
   const loadServerRoots = useWorkspaceStore((state) => state.loadServerRoots);
   const servers = useConsoleStore((state) => state.servers);
@@ -143,14 +210,21 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
         : undefined) ?? pool[0];
     setArtifactId(nextArtifactId);
     setPlacementId(placement?.placement_id ?? "");
-    setTargetServerId(firstTargetServer(servers, placement?.server_id));
+    setTargetServerId(
+      suggestedTargetServer(
+        "",
+        peerServerIds(nextArtifactId, projects, placements, placement?.server_id),
+        servers,
+        placement?.server_id,
+      ),
+    );
     setTargetPath("");
     setPathTouched(false);
     setStrategy("auto");
     setPlan(null);
     setPlanError(null);
     setCreateError(null);
-  }, [open, prefill, artifacts, placements, servers]);
+  }, [open, prefill, artifacts, placements, projects, servers]);
 
   // Target path suggestion from the target server's kind root + name:version,
   // only while the user has not typed their own path. Fetches roots on demand.
@@ -242,8 +316,22 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
             onChange={(event) => {
               const next = event.target.value;
               setArtifactId(next);
-              const pool = placements.filter((p) => p.artifact_id === next);
-              setPlacementId(pool[0]?.placement_id ?? "");
+              const nextPlacement = placements.find((p) => p.artifact_id === next);
+              const nextSourceServerId = nextPlacement?.server_id;
+              // A new artifact voids the previous manual path (the suggestion
+              // effect regenerates it) and re-aims the target toward the
+              // project's peer servers when they exist; a current target that
+              // is already a peer (or, peer-less, is still valid) is kept.
+              setPathTouched(false);
+              setTargetServerId(
+                suggestedTargetServer(
+                  targetServerId,
+                  peerServerIds(next, projects, placements, nextSourceServerId),
+                  servers,
+                  nextSourceServerId,
+                ),
+              );
+              setPlacementId(nextPlacement?.placement_id ?? "");
             }}
           >
             {artifacts.length === 0 && <option value="">—</option>}
@@ -263,7 +351,16 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
           <Select
             id="tf-source"
             value={placementId}
-            onChange={(event) => setPlacementId(event.target.value)}
+            onChange={(event) => {
+              const next = event.target.value;
+              setPlacementId(next);
+              // Switching source must never leave the target unset or equal
+              // to the new source; a still-valid target choice is kept.
+              const nextServerId = placements.find((p) => p.placement_id === next)?.server_id;
+              if (targetServerId === "" || targetServerId === nextServerId) {
+                setTargetServerId(firstTargetServer(servers, nextServerId));
+              }
+            }}
           >
             {artifactPlacements.length === 0 && <option value="">—</option>}
             {artifactPlacements.map((placement) => (

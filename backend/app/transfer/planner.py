@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 _RSYNC_CHECK = "command -v rsync"
 _PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)%")
 _DEFAULT_PROBE_TIMEOUT_S = 15.0
+_PROBE_DETAIL_MAX_CHARS = 160
 
 
 def build_rsync_command(
@@ -168,16 +169,18 @@ async def plan_transfer(
     rsync_source = await _rsync_present(source_executor)
     rsync_target = await _rsync_present(target_executor)
     probe_ok = False
-    probe_note = ""
+    probe_detail = ""
     if rsync_source and rsync_target:
         try:
             params = ssh.resolve_params_for(target_server)
             session = await ssh.transfer_command_session(source_server)
-            probe_ok = await _batch_mode_probe(session, params.host, params.port, params.username)
+            probe_ok, probe_detail = await _batch_mode_probe(
+                session, params.host, params.port, params.username
+            )
             await session.close()
         except Exception as exc:  # transport failure -> relay
             probe_ok = False
-            probe_note = f"preflight probe failed: {str(exc)[:120]}"
+            probe_detail = f"preflight probe failed: {str(exc)[:120]}"
 
     direct_available = bool(rsync_source and rsync_target and probe_ok)
     plan.strategy_available = {"direct_rsync": direct_available, "local_relay": True}
@@ -195,7 +198,7 @@ async def plan_transfer(
             plan.reason = "direct rsync unavailable: " + (
                 "rsync missing on source or target"
                 if not (rsync_source and rsync_target)
-                else (probe_note or "source cannot SSH to target non-interactively")
+                else (probe_detail or "source cannot SSH to target non-interactively")
             )
         return plan
 
@@ -205,7 +208,11 @@ async def plan_transfer(
         plan.reason = "direct rsync preflight passed (auto)"
     else:
         plan.strategy_selected = TransferStrategy.LOCAL_RELAY
-        plan.reason = probe_note or ("direct rsync unavailable; falling back to local relay")
+        plan.reason = (
+            f"direct rsync unavailable: {probe_detail}; using local relay"
+            if probe_detail
+            else "direct rsync unavailable; falling back to local relay"
+        )
     return plan
 
 
@@ -265,12 +272,16 @@ async def _probe_target_free(
 
 async def _batch_mode_probe(
     session: LongCommandSession, host: str, port: int | None, username: str | None
-) -> bool:
+) -> tuple[bool, str]:
     """Strict non-interactive SSH test: no prompts, short timeout.
 
     StrictHostKeyChecking=yes never writes to the source server's
     known_hosts (SAFE-BY-DESIGN): an untrusted target fails the probe,
     DIRECT_RSYNC stays unavailable and AUTO falls back to LOCAL_RELAY.
+
+    Returns (ok, detail): on failure detail carries the collected ssh stderr
+    (newlines collapsed, bounded) so the plan reason can say WHY direct rsync
+    is unavailable instead of a bare 'unavailable'.
     """
 
     user_part = f"{username}@" if username else ""
@@ -279,7 +290,26 @@ async def _batch_mode_probe(
         f" -o StrictHostKeyChecking=yes -p {int(port or 22)}"
         f" {shlex.quote(f'{user_part}{host}')} true"
     )
+    stderr_chunks: list[str] = []
+
+    async def _collect_stderr(chunk: str) -> None:
+        stderr_chunks.append(chunk)
+
     try:
-        return await session.run(command, timeout_s=20.0) == 0
-    except Exception:
-        return False
+        exit_code = await session.run(command, timeout_s=20.0, on_stderr=_collect_stderr)
+    except Exception as exc:
+        return False, f"probe error: {str(exc)[:120]}"
+    if exit_code == 0:
+        return True, ""
+    return False, _probe_detail("".join(stderr_chunks), exit_code)
+
+
+def _probe_detail(stderr: str, exit_code: int) -> str:
+    """Collected probe stderr as a one-line reason detail (~160 chars max).
+
+    Newlines collapse to '; ' so the reason stays single-line; an empty
+    stderr degrades to the exit code so the reason is never bare.
+    """
+    collapsed = "; ".join(line.strip() for line in stderr.splitlines() if line.strip())
+    detail = collapsed[:_PROBE_DETAIL_MAX_CHARS].strip()
+    return detail or f"ssh exited with code {exit_code}"

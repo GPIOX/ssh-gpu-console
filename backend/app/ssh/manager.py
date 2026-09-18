@@ -17,6 +17,7 @@ Invariants:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 
 from app.core.config import Settings
@@ -79,6 +80,9 @@ class SshManager:
         # same auth/host-key policy, independent lifecycle and slots.
         self._transfer_sessions: dict[str, SftpTransferSession | LongCommandSession] = {}
         self._transfer_slots: dict[str, asyncio.Semaphore] = {}
+        # Serializes transfer-session creation per server (lazily created like
+        # _transfer_slots): concurrent callers for one server share ONE session.
+        self._transfer_session_locks: dict[str, asyncio.Lock] = {}
         self._retiring: set[str] = set()
         self._retire_events: dict[str, asyncio.Event] = {}
         self._global_slots = asyncio.Semaphore(settings.max_in_flight_global)
@@ -368,19 +372,55 @@ class SshManager:
         """Dedicated SFTP session for one server (transfer-only, cached).
 
         Same auth/host-key rules as telemetry, but a separate connection so
-        telemetry timeouts never kill an in-flight dataset transfer.
+        telemetry timeouts never kill an in-flight dataset transfer. A cached
+        session is reused only when it is still usable: one whose underlying
+        SSH connection died (laptop sleep, network change, remote restart) is
+        closed and rebuilt here instead of being handed out dead (asyncssh's
+        'Connection not open'). Creation is serialized per server, so
+        concurrent callers for one server share exactly one session.
         """
         async with self._lock:
             session = self._transfer_sessions.get(server.server_id)
-        if session is not None and not getattr(session, "closed", False):
+        if session is not None and not session.is_usable():
+            await self._drop_dead_transfer_session(server.server_id, session)
+            session = None
+        if session is not None:
             return session
-        params = self._params(server)
-        connection = await self._connect_factory(params)
-        sftp = await connection.start_sftp_client()
-        session = SftpTransferSession(connection, sftp, self.settings)
+        lock = self._transfer_session_locks.get(server.server_id)
+        if lock is None:
+            # No await between get and set: the lazy creation is atomic.
+            lock = asyncio.Lock()
+            self._transfer_session_locks[server.server_id] = lock
+        async with lock:
+            # Double-check under the per-server lock: another caller for this
+            # server may have created the session while we waited here.
+            async with self._lock:
+                cached = self._transfer_sessions.get(server.server_id)
+            if cached is not None:
+                if cached.is_usable():
+                    return cached
+                await self._drop_dead_transfer_session(server.server_id, cached)
+            params = self._params(server)
+            connection = await self._connect_factory(params)
+            sftp = await connection.start_sftp_client()
+            session = SftpTransferSession(connection, sftp, self.settings)
+            async with self._lock:
+                self._transfer_sessions[server.server_id] = session
+            return session
+
+    async def _drop_dead_transfer_session(
+        self, server_id: str, session: SftpTransferSession | LongCommandSession
+    ) -> None:
+        """Pop an unusable session from the cache and close it.
+
+        Every failure is suppressed: the session is already dead, and close
+        must never block or fail the fresh creation that follows.
+        """
         async with self._lock:
-            self._transfer_sessions[server.server_id] = session
-        return session
+            if self._transfer_sessions.get(server_id) is session:
+                self._transfer_sessions.pop(server_id, None)
+        with contextlib.suppress(Exception):
+            await session.close()
 
     async def transfer_command_session(self, server: ServerLike) -> LongCommandSession:
         """Dedicated connection for long-running transfer commands (rsync)."""

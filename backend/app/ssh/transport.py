@@ -262,6 +262,16 @@ class SftpTransferSession:
         self._sftp = sftp
         self.closed = False
 
+    def is_usable(self) -> bool:
+        """Health check without any network I/O.
+
+        False once WE closed the session, or once the underlying SSH
+        connection died (laptop sleep, network change, remote restart) —
+        the state that previously surfaced only as asyncssh's
+        'Connection not open' on the first SFTP operation.
+        """
+        return not self.closed and not self._conn.is_closed()
+
     async def stat(self, path: str) -> FileStat:
         import stat as stat_module
 
@@ -383,11 +393,13 @@ class LongCommandSession:
     """LongCommandRunner over a dedicated asyncssh connection.
 
     Streams stdout through a callback so the rsync progress parser reads live
-    lines. Cancellation semantics: ``cancel()`` sets the flag AND closes the
-    channel immediately; ``run()`` observes the flag at its 0.5s poll and
-    raises ``asyncio.CancelledError`` within at most one poll interval. The
-    closed channel makes the remote sshd terminate the rsync process, while
-    rsync's ``--partial-dir`` preserves the local partial for a later resume.
+    lines; stderr is drained concurrently (optionally via ``on_stderr``) so
+    its pipe can never fill and deadlock the remote process. Cancellation
+    semantics: ``cancel()`` sets the flag AND closes the channel immediately;
+    ``run()`` observes the flag at its 0.5s poll and raises
+    ``asyncio.CancelledError`` within at most one poll interval. The closed
+    channel makes the remote sshd terminate the rsync process, while rsync's
+    ``--partial-dir`` preserves the local partial for a later resume.
     """
 
     def __init__(self, connection: RemoteConnection, settings: Settings) -> None:
@@ -395,27 +407,37 @@ class LongCommandSession:
         self._cancelled = False
         self._process: Any | None = None
 
+    def is_usable(self) -> bool:
+        """Health check without any network I/O (same contract as
+        SftpTransferSession.is_usable): False after cancel()/timeout or when
+        the underlying SSH connection died."""
+        return not self._cancelled and not self._conn.is_closed()
+
     async def run(
         self,
         command: str,
         *,
         timeout_s: float,
         on_stdout: Any | None = None,
+        on_stderr: Any | None = None,
     ) -> int:
         import asyncio
 
         async with self._conn.create_process(command) as process:
             self._process = process
 
-            async def _reader() -> None:
+            async def _reader(stream: Any, sink: Any | None) -> None:
                 while True:
-                    chunk = await process.stdout.read(65536)
+                    chunk = await stream.read(65536)
                     if not chunk:
                         return
-                    if on_stdout is not None:
-                        await on_stdout(chunk)
+                    if sink is not None:
+                        await sink(chunk)
 
-            reader = asyncio.create_task(_reader())
+            reader = asyncio.create_task(_reader(process.stdout, on_stdout))
+            # Stderr is ALWAYS drained (even with no consumer): a full pipe
+            # would block the remote process and deadlock the command.
+            stderr_reader = asyncio.create_task(_reader(process.stderr, on_stderr))
             deadline = asyncio.get_event_loop().time() + timeout_s
             try:
                 while True:
@@ -431,15 +453,31 @@ class LongCommandSession:
                     if asyncio.get_event_loop().time() > deadline:
                         raise TimeoutError
                 await asyncio.wait_for(reader, timeout=1.0)
-                exit_code = await process.wait()
+                completed = await process.wait()
+                # asyncssh's wait() returns an SSHCompletedProcess record, not
+                # an int (field-verified on asyncssh 2.24): the previous
+                # int(exit_code or 0) raised TypeError on every real run and
+                # int-bearing stubs hid it from the tests.
+                exit_code = (
+                    completed
+                    if isinstance(completed, int)
+                    else getattr(completed, "exit_status", None)
+                )
+                # The channel closes only after the last stderr bytes were
+                # buffered, but the drain task still needs one scheduling beat
+                # to collect them — give it a bounded window so an on_stderr
+                # collector never misses the tail.
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(stderr_reader, timeout=1.0)
                 return int(exit_code or 0)
             except (TimeoutError, asyncio.CancelledError):
                 self._cancelled = True
                 raise
             finally:
                 self._process = None
-                if not reader.done():
-                    reader.cancel()
+                for task in (reader, stderr_reader):
+                    if not task.done():
+                        task.cancel()
 
     async def cancel(self) -> None:
         # Closing the channel kills the remote process (sshd side) right away

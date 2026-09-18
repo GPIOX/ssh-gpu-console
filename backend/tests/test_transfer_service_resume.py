@@ -123,7 +123,9 @@ class FakeLongSession:
         self.run_finished = False
         self._release = asyncio.Event()
 
-    async def run(self, command: str, *, timeout_s: float, on_stdout: Any = None) -> int:
+    async def run(
+        self, command: str, *, timeout_s: float, on_stdout: Any = None, on_stderr: Any = None
+    ) -> int:
         self.commands.append(command)
         if command.startswith("ssh "):  # batch-mode source->target probe
             return 0

@@ -40,7 +40,9 @@ class _ProbeSession:
         self.commands: list[str] = []
         self._exit = exit_code
 
-    async def run(self, command: str, *, timeout_s: float, on_stdout: Any = None) -> int:
+    async def run(
+        self, command: str, *, timeout_s: float, on_stdout: Any = None, on_stderr: Any = None
+    ) -> int:
         self.commands.append(command)
         return self._exit
 
@@ -91,12 +93,14 @@ class _FakeStdout:
 
 
 class _FakeProcess:
-    """Offline process stand-in: stdout.read blocks until the channel closes."""
+    """Offline process stand-in: stdout AND stderr read blocks until the
+    channel closes (the real LongCommandSession now drains both pipes)."""
 
     def __init__(self) -> None:
         self.closed = False
         self.channel_closed = asyncio.Event()
         self.stdout = _FakeStdout(self)
+        self.stderr = _FakeStdout(self)
 
     async def __aenter__(self) -> _FakeProcess:
         return self
@@ -152,8 +156,9 @@ def _job() -> TransferJob:
 @pytest.mark.asyncio
 async def test_probe_command_never_writes_known_hosts() -> None:
     session = _ProbeSession(exit_code=0)
-    ok = await _batch_mode_probe(session, "target-host", 2222, "u")
+    ok, detail = await _batch_mode_probe(session, "target-host", 2222, "u")
     assert ok
+    assert detail == ""
     assert len(session.commands) == 1
     assert "StrictHostKeyChecking=yes" in session.commands[0]
     assert "accept-new" not in session.commands[0]

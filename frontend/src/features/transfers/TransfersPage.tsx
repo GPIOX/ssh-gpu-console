@@ -100,6 +100,7 @@ export function TransfersPage() {
   const clearHistory = useTransferStore((state) => state.clearHistory);
   const loadArtifacts = useWorkspaceStore((state) => state.loadArtifacts);
   const loadPlacements = useWorkspaceStore((state) => state.loadPlacements);
+  const loadProjects = useWorkspaceStore((state) => state.loadProjects);
 
   // Named confirm dialog for the destructive clear-history action.
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -121,14 +122,17 @@ export function TransfersPage() {
 
   useEffect(() => {
     void loadJobs();
-    // The New-Transfer dialog lists workspace assets; after a refresh a user
-    // can land directly on this page, so prefetch the catalog (idempotent
-    // GETs, never polled). Batches group the jobs below (read-only GET).
+    // The New-Transfer dialog lists workspace assets and reads the project
+    // records (project-level placement context drives its target suggestion);
+    // after a refresh a user can land directly on this page, so prefetch the
+    // catalog (idempotent GETs, never polled). Batches group the jobs below
+    // (read-only GET).
     void loadArtifacts();
     void loadPlacements();
+    void loadProjects();
     void fetchBatches();
     return () => stopPolling(); // page unmount clears the 1 Hz timer
-  }, [loadJobs, loadArtifacts, loadPlacements, fetchBatches, stopPolling]);
+  }, [loadJobs, loadArtifacts, loadPlacements, loadProjects, fetchBatches, stopPolling]);
 
   // 进行中 = planning/running/verifying; 等待 = queued; 已完成 = completed.
   const counts = {
