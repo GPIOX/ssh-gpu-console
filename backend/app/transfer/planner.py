@@ -34,6 +34,7 @@ def build_rsync_command(
     target_port: int | None,
     excludes: list[str] | tuple[str, ...] = (),
     dedicated_key: DedicatedKeyOptions | None = None,
+    source_is_dir: bool = False,
 ) -> str:
     """Fixed-flag rsync command with safely quoted arguments (no user flags).
 
@@ -49,11 +50,22 @@ def build_rsync_command(
     Exclusion patterns travel as --exclude=arg (full rsync semantics; the
     transfer root itself is never excluded by rsync).
 
+    ``source_is_dir`` appends the trailing slash to the SOURCE spec: without
+    it, `rsync -r src dst` nests the copy as ``dst/<basename(src)>/``
+    (field-verified even when dst does not exist), disagreeing with the
+    relay's "contents land at target_path" semantics. A slash-source copies
+    the CONTENTS into dst — the shared contract across both strategies.
+
     With ``dedicated_key`` the `-e` ssh options additionally pin the SGC
     dedicated identity and the app-owned known_hosts file (Phase 4.2C):
     `-i <key> -o IdentitiesOnly=yes -o UserKnownHostsFile=<known_hosts>`.
     NEVER any password-based auth, no askpass helpers, never agent forwarding.
     """
+    source_spec = (
+        source_path
+        if source_path.endswith("/")
+        else (f"{source_path}/" if source_is_dir else source_path)
+    )
     ssh_opts = "ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes"
     if dedicated_key is not None:
         ssh_opts += (
@@ -77,7 +89,7 @@ def build_rsync_command(
         shlex.quote(ssh_opts),
         *(_exclude_args(excludes)),
         "--",
-        shlex.quote(source_path),
+        shlex.quote(source_spec),
         target_spec,  # already quoted by target_rsync_spec
     ]
     return " ".join(parts)
@@ -234,7 +246,7 @@ async def plan_transfer(
     # AUTO
     if direct_available:
         plan.strategy_selected = TransferStrategy.DIRECT_RSYNC
-        plan.reason = "direct rsync preflight passed (auto)"
+        plan.reason = f"direct rsync preflight passed ({direct_method}, auto)"
     else:
         plan.strategy_selected = TransferStrategy.LOCAL_RELAY
         plan.reason = (

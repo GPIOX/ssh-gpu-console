@@ -989,7 +989,7 @@ async def test_planner_native_selected() -> None:
     assert plan.strategy_selected == TransferStrategy.DIRECT_RSYNC
     assert plan.direct_auth_method == "native"
     assert plan.direct_auth_reason is None
-    assert plan.reason == "direct rsync preflight passed (auto)"
+    assert plan.reason == "direct rsync preflight passed (native, auto)"
 
 
 async def test_planner_sgc_key_selected_when_dedicated_probe_passes() -> None:
@@ -1052,6 +1052,32 @@ def test_rsync_command_with_dedicated_key_exact() -> None:
     assert "sshpass" not in command
     assert "SSH_ASKPASS" not in command
     assert "ForwardAgent" not in command
+
+
+def test_rsync_command_directory_source_gets_trailing_slash() -> None:
+    """A slash-less DIRECTORY source must copy CONTENTS into dst.
+
+    Without the trailing slash rsync nests the copy as dst/<basename(src)>/
+    (field-verified even when dst does not exist), disagreeing with the
+    relay's "contents land at target_path" semantics.
+    """
+
+    command = build_rsync_command(
+        source_path="/srv/data",
+        target_spec=shlex.quote("u@h:/srv/data"),
+        target_port=None,
+        source_is_dir=True,
+    )
+    tokens = shlex.split(command)
+    source_index = tokens.index("--") + 1
+    assert tokens[source_index] == "/srv/data/"
+    plain = build_rsync_command(
+        source_path="/srv/file.bin",
+        target_spec=shlex.quote("u@h:/srv/file.bin"),
+        target_port=None,
+        source_is_dir=False,
+    )
+    assert "/srv/file.bin/" not in plain
 
 
 def test_rsync_command_without_dedicated_key_unchanged() -> None:

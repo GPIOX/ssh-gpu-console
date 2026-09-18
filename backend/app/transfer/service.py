@@ -324,12 +324,29 @@ class TransferService:
             username=target_params.username,
             target_path=job.target_path,
         )
+        # rsync semantics (field-verified): a slash-less DIRECTORY source
+        # nests the copy as dst/<basename(src)>/ even when dst is missing.
+        # The relay puts CONTENTS at target_path, so a directory source must
+        # travel with a trailing slash; a missing probe keeps the old spec.
+        source_is_dir = False
+        try:
+            # POSIX test(1) has no "--" end-of-options (dash returns usage
+            # error 2, field-verified): route the path through a quoted
+            # variable instead of an argument.
+            probe = await self._executor(job.source_server_id).run(
+                f'p={_q(job.source_path)}; if [ -d "$p" ]; then echo DIR; else echo NODIR; fi',
+                timeout_s=10,
+            )
+            source_is_dir = probe.stdout.strip() == "DIR"
+        except Exception:
+            source_is_dir = False
         command = build_rsync_command(
             source_path=job.source_path,
             target_spec=spec,
             target_port=target_params.port,
             excludes=list(job.excludes),
             dedicated_key=dedicated,
+            source_is_dir=source_is_dir,
         )
         source_size_b = await self._source_size(job)
         if source_size_b is not None and source_size_b > 0:
@@ -471,11 +488,18 @@ class TransferService:
 
     async def _source_size(self, job: TransferJob) -> int | None:
         try:
+            # Same dispatch as the planner's disk probe: a directory source
+            # reports its CONTENT size via du -sb (stat alone returns the
+            # 4096-byte inode size, field-verified).
             result = await self._executor(job.source_server_id).run(
-                f"stat -c %s -- {_q(job.source_path)}", timeout_s=10
+                f"p={_q(job.source_path)};"
+                ' if [ -d "$p" ]; then du -sb -- "$p"; else stat -c %s -- "$p"; fi',
+                timeout_s=15,
             )
             if result.exit_code == 0:
-                return int(result.stdout.strip() or 0) or None
+                lines = [line for line in result.stdout.splitlines() if line.strip()]
+                if lines:
+                    return int(lines[-1].split()[0]) or None
         except Exception:
             pass
         return None

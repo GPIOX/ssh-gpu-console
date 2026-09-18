@@ -195,4 +195,6 @@ queued/planning/running/verifying.
   → unavailable/relay), dedicated-key setup/repair/revoke, app-owned remote
   known_hosts, direct rsync integration and the auth/direct-transfer UI.
   Details: `docs/SSH_CREDENTIALS_AND_DIRECT_TRANSFER.md`. Real-machine LEVEL 2
-  dedicated-key setup awaits explicit user authorization.
+  was executed with explicit user authorization (setup → sgc_key direct
+  rsync smoke → no-op rerun → revoke → authentication_failed → relay
+  fallback), with all user key material preserved byte-for-byte.
