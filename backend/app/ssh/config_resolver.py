@@ -43,7 +43,12 @@ class SSHConfigEntry:
 
 @dataclass
 class ConnectParams:
-    """Effective connection parameters after ssh_config + registry overrides."""
+    """Effective connection parameters after ssh_config + registry overrides.
+
+    ``server_id`` is attached by ``SshManager._params`` so the connect factory
+    can look up an OPTIONAL stored password in the credential store; the
+    password itself is never a ConnectParams field.
+    """
 
     host: str
     port: int = 22
@@ -53,6 +58,7 @@ class ConnectParams:
     source: str = "default"
     config_path: Path | None = None
     original_host: str | None = None
+    server_id: str | None = None
 
 
 def _strip_inline_comment(value: str) -> str:

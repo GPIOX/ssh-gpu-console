@@ -554,6 +554,11 @@ The product manages servers; workspaces manage the AI assets ON them.
 - **Cross-server transfer MVP**: rsync-based direct sync with automatic Local Relay fallback
   (bounded RAM chunks through the control plane), quick size verification, explicit cancel/retry.
 - **Placement inspection is explicit**: user-requested SSH checks only, results RAM-only.
+- **Credentials & direct transfer (Phase 4.2)**: optional local password in a secure OS
+  keyring (session-only RAM fallback, never persisted or logged); server→server direct
+  rsync via native BatchMode auth when available, else an explicitly user-provisioned,
+  pair-scoped, revocable ED25519 dedicated key — a password is never used for
+  server-to-server rsync, and unavailable direct auth falls back to Local Relay.
 - **Runtime state is never persisted**: transfer progress, scan results and job history stay
   in bounded RAM; workspace.json only changes on explicit CRUD.
 - Destructive operations on remote files are NOT in scope. No mirror/delete sync.

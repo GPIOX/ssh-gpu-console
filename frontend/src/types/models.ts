@@ -89,6 +89,73 @@ export interface ConnectionTestResult {
 }
 
 // ---------------------------------------------------------------------------
+// Server auth + direct transfer (phase 4.2B/4.2D — pinned wire shapes)
+// ---------------------------------------------------------------------------
+
+/** How a stored password credential is kept server-side. */
+export type PasswordStorage = "system_keyring" | "session_only";
+
+/** GET /servers/{id}/auth — SSH config resolution facts. NEVER carries a password. */
+export interface ServerAuthStatus {
+  ssh_config_used: boolean;
+  effective_host: string;
+  effective_user: string | null;
+  effective_port: number;
+  identity_files: number;
+  agent_available: boolean;
+  proxy_jump_configured: boolean;
+  password_configured: boolean;
+  password_storage: PasswordStorage | null;
+}
+
+/** Known direct-auth failure taxonomy; anything else is surfaced verbatim. */
+export type DirectAuthReason =
+  | "route_unreachable"
+  | "host_key_unknown"
+  | "host_key_mismatch"
+  | "authentication_failed"
+  | "rsync_missing_source"
+  | "rsync_missing_target"
+  | "dedicated_key_missing"
+  | "authorized_key_missing"
+  | "remote_key_invalid"
+  | "source_known_hosts_missing"
+  | "keygen_missing_source"
+  | "unknown";
+
+/** Method a direct-auth pair was established with. */
+export type DirectAuthMethod = "native" | "sgc_key";
+
+/** Pair metadata shared by the check/setup responses and the pairs listing. */
+export interface DirectAuthPeer {
+  target_server_id: string;
+  configured: boolean;
+  method: DirectAuthMethod | null;
+  /** null = never checked. */
+  available: boolean | null;
+  reason: DirectAuthReason | null;
+  checked_at: string | null;
+}
+
+/** One (source → target) direct-auth pair from the zero-SSH pairs listing. */
+export interface DirectAuthPair extends DirectAuthPeer {
+  source_server_id: string;
+}
+
+/** GET /servers/{id}/direct-auth response — every pair (BOTH directions)
+ *  involving the queried server. */
+export interface DirectAuthList {
+  server_id: string;
+  pairs: DirectAuthPair[];
+}
+
+/** PUT /servers/{id}/credentials/password response. */
+export interface PasswordCredentialStatus {
+  configured: true;
+  storage: PasswordStorage;
+}
+
+// ---------------------------------------------------------------------------
 // Telemetry (backend/app/models/telemetry.py)
 // ---------------------------------------------------------------------------
 

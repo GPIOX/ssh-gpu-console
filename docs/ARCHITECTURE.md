@@ -821,6 +821,14 @@ unlimited multi-host concurrency
   dataset transfer and vice versa;
 - Local Relay streams SFTP chunks through bounded RAM (no staging file); direct rsync
   requires a strict non-interactive preflight and falls back to relay automatically;
+- credentials and direct auth (Phase 4.2, see `docs/SSH_CREDENTIALS_AND_DIRECT_TRANSFER.md`):
+  an OPTIONAL local password lives in a CredentialStore (OS keyring with strict
+  secure-backend detection, session-only RAM fallback, no plaintext store), is unwrapped
+  only at the asyncssh call site, and never appears in models/logs/responses;
+  server→server direct rsync uses native BatchMode auth when present, else an explicitly
+  provisioned, pair-scoped ED25519 key on the source with restricted authorized_keys
+  entry and app-owned remote known_hosts — a password is NEVER used for direct rsync,
+  and unavailable direct auth always falls back to Local Relay;
 - transfer job state is a RAM-only state machine
   (queued→planning→running→verifying→completed|failed|cancelled), history bounded.
 

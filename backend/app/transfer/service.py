@@ -34,7 +34,9 @@ from app.transfer.strategies.local_relay import CancelRequested
 if TYPE_CHECKING:
     from app.collectors.base import ExecutorLike
     from app.core.config import Settings
+    from app.direct_auth.service import DirectAuthService
     from app.models.server import ServerRecord
+    from app.models.transfer import DedicatedKeyOptions
     from app.ssh.manager import SshManager
     from app.workspace.service import WorkspaceService
 
@@ -51,10 +53,12 @@ class TransferService:
         ssh: SshManager,
         workspace: WorkspaceService,
         jobs: JobRegistry | None = None,
+        direct_auth: DirectAuthService | None = None,
     ) -> None:
         self._settings = settings
         self._ssh = ssh
         self._workspace = workspace
+        self._direct_auth = direct_auth
         self._jobs = jobs or JobRegistry(
             history_limit=int(getattr(settings, "transfer_job_history", 100))
         )
@@ -114,6 +118,7 @@ class TransferService:
             ssh=self._ssh,
             excludes=self._resolve_excludes(request.artifact_id),
             probe_timeout_s=self._probe_timeout_s(),
+            dedicated_key=self._dedicated_key_options(stub.source_server_id, stub.target_server_id),
         )
 
     # ---- creation -----------------------------------------------------------------
@@ -239,6 +244,7 @@ class TransferService:
             ssh=self._ssh,
             excludes=list(job.excludes),
             probe_timeout_s=self._probe_timeout_s(),
+            dedicated_key=self._dedicated_key_options(job.source_server_id, job.target_server_id),
         )
         if self._jobs.find(job.job_id) is None:
             return
@@ -257,7 +263,7 @@ class TransferService:
                 return
             try:
                 if plan.strategy_selected is TransferStrategy.DIRECT_RSYNC:
-                    await self._run_rsync(job, source_server, target_server)
+                    await self._run_rsync(job, source_server, target_server, plan)
                 else:
                     self._jobs.transition(job, TransferState.RUNNING)
                     source_session, target_session = await self._relay_sessions(
@@ -291,12 +297,26 @@ class TransferService:
         job: TransferJob,
         source_server: ServerRecord,
         target_server: ServerRecord,
+        plan: TransferPlan,
     ) -> None:
         from app.transfer.planner import build_rsync_command, parse_progress2, target_rsync_spec
 
         if job.state.value == TransferState.CANCELLED.value:
             raise CancelRequested(job.job_id)
         self._jobs.transition(job, TransferState.RUNNING)
+
+        # Phase 4.2C: when planning selected the dedicated key, the pair's
+        # metadata must STILL exist. If it vanished between plan and run we
+        # fail the job loudly instead of silently falling back to a weaker
+        # auth path (never a password, never the user's default key).
+        dedicated: DedicatedKeyOptions | None = None
+        if plan.direct_auth_method == "sgc_key":
+            options = self._dedicated_key_options(job.source_server_id, job.target_server_id)
+            if options is None:
+                # Fail the job loudly: never fall back silently to a weaker
+                # auth path (never a password, never the user's default key).
+                raise ConflictError("direct transfer key is no longer configured")
+            dedicated = options
 
         target_params = self._ssh.resolve_params_for(target_server)
         spec = target_rsync_spec(
@@ -309,6 +329,7 @@ class TransferService:
             target_spec=spec,
             target_port=target_params.port,
             excludes=list(job.excludes),
+            dedicated_key=dedicated,
         )
         source_size_b = await self._source_size(job)
         if source_size_b is not None and source_size_b > 0:
@@ -398,6 +419,13 @@ class TransferService:
 
     def _probe_timeout_s(self) -> float:
         return float(getattr(self._settings, "transfer_preflight_timeout_s", 15.0))
+
+    def _dedicated_key_options(self, source_id: str, target_id: str) -> DedicatedKeyOptions | None:
+        """SOURCE-side dedicated-key options when the pair is configured (4.2C)."""
+
+        if self._direct_auth is None:
+            return None
+        return self._direct_auth.dedicated_key_options(source_id, target_id)
 
     async def _verify(self, job: TransferJob, strategy: TransferStrategy) -> tuple[bool, str]:
         from app.transfer.verifier import quick_verify

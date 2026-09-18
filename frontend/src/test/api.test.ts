@@ -149,3 +149,83 @@ describe("snapshot normalization invariants", () => {
     expect(snapshot.gpus).toEqual([]);
   });
 });
+
+describe("direct-auth pairs listing normalization", () => {
+  it("normalizes the pairs shape reading both ids, dropping malformed pairs", async () => {
+    stubFetch(async () =>
+      jsonResponse(200, {
+        server_id: "srv-q",
+        pairs: [
+          {
+            source_server_id: "srv-a",
+            target_server_id: "srv-q",
+            configured: true,
+            method: "sgc_key",
+            available: true,
+            reason: null,
+            checked_at: "2026-09-18T00:00:00Z",
+          },
+          {
+            source_server_id: "srv-q",
+            target_server_id: "srv-b",
+            configured: false,
+            method: "native",
+            available: false,
+            reason: "keygen_missing_source",
+            checked_at: null,
+          },
+          { source_server_id: "srv-c" }, // missing target id → dropped
+          "garbage", // dropped
+        ],
+      }),
+    );
+    const list = await api.getDirectAuth("srv-q");
+    expect(list.server_id).toBe("srv-q");
+    expect(list.pairs).toEqual([
+      {
+        source_server_id: "srv-a",
+        target_server_id: "srv-q",
+        configured: true,
+        method: "sgc_key",
+        available: true,
+        reason: null,
+        checked_at: "2026-09-18T00:00:00Z",
+      },
+      {
+        source_server_id: "srv-q",
+        target_server_id: "srv-b",
+        configured: false,
+        method: "native",
+        available: false,
+        reason: "keygen_missing_source",
+        checked_at: null,
+      },
+    ]);
+  });
+
+  it("passes unknown reason codes through verbatim and rejects a missing server_id", async () => {
+    stubFetch(async () =>
+      jsonResponse(200, {
+        server_id: "srv-q",
+        pairs: [
+          {
+            source_server_id: "srv-a",
+            target_server_id: "srv-q",
+            configured: false,
+            method: null,
+            available: false,
+            reason: "some_future_code",
+            checked_at: null,
+          },
+        ],
+      }),
+    );
+    const list = await api.getDirectAuth("srv-q");
+    expect(list.pairs[0]?.reason).toBe("some_future_code");
+
+    stubFetch(async () =>
+      jsonResponse(200, { source_server_id: "srv-q", pairs: [] }), // legacy shape → invalid
+    );
+    await expect(api.getDirectAuth("srv-q")).rejects.toThrow("invalid direct-auth list payload");
+  });
+});

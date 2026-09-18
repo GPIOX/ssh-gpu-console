@@ -408,6 +408,10 @@ describe("edit server dialog", () => {
     expect(within(dialog).getByText(/Remove server/)).toBeTruthy();
     expect(within(dialog).getAllByText(/Remove alpha/).length).toBeGreaterThan(0);
     expect(within(dialog).getByText("demo@10.0.0.8:22")).toBeTruthy();
+    // Spec item 30: non-blocking hint — deleting here never revokes the
+    // console's dedicated direct-transfer keys on other machines.
+    expect(within(dialog).getByText(/does NOT revoke/)).toBeTruthy();
+    expect(within(dialog).getByText(/Revoke direct transfer first/)).toBeTruthy();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove alpha" }));
     await waitFor(() => {

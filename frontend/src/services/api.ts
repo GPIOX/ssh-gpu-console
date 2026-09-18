@@ -6,9 +6,13 @@
 import type {
   AliasEntry,
   ConnectionTestResult,
+  DirectAuthList,
+  DirectAuthPeer,
   FleetSummary,
   HistoryPoint,
   HostKeyPrompt,
+  PasswordCredentialStatus,
+  ServerAuthStatus,
   ServerCreate,
   ServerPatch,
   ServerRecord,
@@ -17,8 +21,11 @@ import type {
 import {
   normalizeAliasEntry,
   normalizeConnectionTestResult,
+  normalizeDirectAuthList,
+  normalizeDirectAuthPeer,
   normalizeFleetSummary,
   normalizeHistoryPoints,
+  normalizeServerAuthStatus,
   normalizeServerRecord,
   normalizeServerSnapshot,
 } from "./normalize";
@@ -38,7 +45,7 @@ export class ApiError extends Error {
   }
 }
 
-type Method = "GET" | "POST" | "PATCH" | "DELETE";
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 async function request(path: string, method: Method, body?: unknown): Promise<unknown> {
   let response: Response;
@@ -132,6 +139,83 @@ export const api = {
    *  HostKeyPrompt is echoed so the backend can persist what was approved. */
   async trustHostKey(serverId: string, prompt: HostKeyPrompt): Promise<unknown> {
     return request(`/servers/${encodeURIComponent(serverId)}/host-key/trust`, "POST", prompt);
+  },
+
+  /** SSH-config resolution facts for one server (zero SSH; never a password). */
+  async getServerAuth(serverId: string): Promise<ServerAuthStatus> {
+    const raw = await request(`/servers/${encodeURIComponent(serverId)}/auth`, "GET");
+    const status = normalizeServerAuthStatus(raw);
+    if (status === null) throw invalidPayload("server auth status");
+    return status;
+  },
+
+  /** Store a password credential server-side (system keyring or session-only). */
+  async setPassword(serverId: string, password: string): Promise<PasswordCredentialStatus> {
+    const raw = await request(
+      `/servers/${encodeURIComponent(serverId)}/credentials/password`,
+      "PUT",
+      { password },
+    );
+    const storage =
+      typeof raw === "object" && raw !== null && !Array.isArray(raw)
+        ? (raw as { storage?: unknown }).storage
+        : undefined;
+    if (
+      typeof raw !== "object" ||
+      raw === null ||
+      Array.isArray(raw) ||
+      (raw as { configured?: unknown }).configured !== true ||
+      (storage !== "system_keyring" && storage !== "session_only")
+    ) {
+      throw invalidPayload("password credential status");
+    }
+    return raw as PasswordCredentialStatus;
+  },
+
+  /** Remove a stored password credential. */
+  async deletePassword(serverId: string): Promise<void> {
+    await request(`/servers/${encodeURIComponent(serverId)}/credentials/password`, "DELETE");
+  },
+
+  /** Zero-SSH metadata: every direct-auth pair (BOTH directions) involving
+   *  this server — sources that can reach it and targets it can reach. */
+  async getDirectAuth(serverId: string): Promise<DirectAuthList> {
+    const raw = await request(`/servers/${encodeURIComponent(serverId)}/direct-auth`, "GET");
+    const list = normalizeDirectAuthList(raw);
+    if (list === null) throw invalidPayload("direct-auth list");
+    return list;
+  },
+
+  /** Explicit SSH preflight for one (source → target) pair. */
+  async checkDirectAuth(sourceId: string, targetId: string): Promise<DirectAuthPeer> {
+    const raw = await request(
+      `/servers/${encodeURIComponent(sourceId)}/direct-auth/${encodeURIComponent(targetId)}/check`,
+      "POST",
+      {},
+    );
+    const peer = normalizeDirectAuthPeer(raw);
+    if (peer === null) throw invalidPayload("direct-auth peer");
+    return peer;
+  },
+
+  /** Install the SGC dedicated transfer key on the pair (explicit action). */
+  async setupDirectKey(sourceId: string, targetId: string): Promise<DirectAuthPeer> {
+    const raw = await request(
+      `/servers/${encodeURIComponent(sourceId)}/direct-auth/${encodeURIComponent(targetId)}/setup-key`,
+      "POST",
+      {},
+    );
+    const peer = normalizeDirectAuthPeer(raw);
+    if (peer === null) throw invalidPayload("direct-auth peer");
+    return peer;
+  },
+
+  /** Remove the dedicated transfer key for the pair. */
+  async revokeDirectAuth(sourceId: string, targetId: string): Promise<void> {
+    await request(
+      `/servers/${encodeURIComponent(sourceId)}/direct-auth/${encodeURIComponent(targetId)}`,
+      "DELETE",
+    );
   },
 
   async getHealth(): Promise<HealthInfo> {

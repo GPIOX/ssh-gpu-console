@@ -5,8 +5,13 @@ ids) — over real TransferJobs owned by TransferService. The registry never
 copies data and never imports the transfer service: the API layer injects a
 ``create_job`` callback at start and feeds job states into every read, so the
 registry stays a plain data structure. State and counts are always DERIVED
-from the underlying jobs, never stored as truth. Batches are never persisted;
-a restart forgets them while recorded placements survive in workspace.json.
+from the underlying jobs, never stored as truth — with one exception: the
+FIRST read that observes a terminal derived state (COMPLETED /
+PARTIAL_FAILED / FAILED / CANCELLED) freezes that exact view on the record
+(written once, never rewritten), and every later read returns it unchanged
+even when the jobs have since fallen out of the transfer history. Batches
+are never persisted; a restart forgets them while recorded placements
+survive in workspace.json.
 """
 
 from __future__ import annotations
@@ -36,17 +41,30 @@ _TERMINAL_STATES = frozenset(
 _IN_FLIGHT_STATES = frozenset(
     {TransferState.PLANNING, TransferState.RUNNING, TransferState.VERIFYING}
 )
+# Batch states that end the batch's life: the first view deriving one of
+# these is frozen on the record and served forever after.
+_TERMINAL_BATCH_STATES = frozenset(
+    {
+        TransferBatchState.COMPLETED,
+        TransferBatchState.PARTIAL_FAILED,
+        TransferBatchState.FAILED,
+        TransferBatchState.CANCELLED,
+    }
+)
 
 
 @dataclass(slots=True)
 class _Record:
-    """Immutable batch skeleton; every view is derived fresh from job states."""
+    """Immutable batch skeleton; every view is derived fresh from job states
+    until the first terminal observation freezes the final view (written
+    exactly once, then never mutated again)."""
 
     batch_id: str
     project_id: str
     target_server_id: str
     job_ids: list[str]
     created_at: str
+    frozen_view: TransferBatch | None = None
 
 
 def _all_terminal(job_ids: list[str], job_states: dict[str, TransferState]) -> bool:
@@ -60,7 +78,7 @@ def _all_terminal(job_ids: list[str], job_states: dict[str, TransferState]) -> b
 def _derive_state(
     *, queued: int, running: int, completed: int, failed: int, cancelled: int
 ) -> TransferBatchState:
-    """Batch state from per-job counts (no storage of derived state).
+    """Batch state from per-job counts (pure function of the inputs).
 
     Empty batch (nothing to transfer) -> COMPLETED. Any in-flight work ->
     RUNNING; QUEUED only while nothing has started or finished yet. Terminal
@@ -159,25 +177,30 @@ class BatchRegistry:
             self._history.appendleft(self._active.pop(batch_id))
 
     def _view(self, record: _Record, job_states: dict[str, TransferState]) -> TransferBatch:
+        if record.frozen_view is not None:
+            # Terminal batches keep their final snapshot even when the jobs
+            # have since been evicted from the transfer history.
+            return record.frozen_view
         states = [job_states.get(job_id, TransferState.QUEUED) for job_id in record.job_ids]
         queued = sum(1 for state in states if state is TransferState.QUEUED)
         running = sum(1 for state in states if state in _IN_FLIGHT_STATES)
         completed = sum(1 for state in states if state is TransferState.COMPLETED)
         failed = sum(1 for state in states if state is TransferState.FAILED)
         cancelled = sum(1 for state in states if state is TransferState.CANCELLED)
-        return TransferBatch(
+        state = _derive_state(
+            queued=queued,
+            running=running,
+            completed=completed,
+            failed=failed,
+            cancelled=cancelled,
+        )
+        view = TransferBatch(
             batch_id=record.batch_id,
             project_id=record.project_id,
             target_server_id=record.target_server_id,
             job_ids=list(record.job_ids),
             created_at=record.created_at,
-            state=_derive_state(
-                queued=queued,
-                running=running,
-                completed=completed,
-                failed=failed,
-                cancelled=cancelled,
-            ),
+            state=state,
             total_jobs=len(record.job_ids),
             queued_jobs=queued,
             running_jobs=running,
@@ -185,3 +208,8 @@ class BatchRegistry:
             failed_jobs=failed,
             cancelled_jobs=cancelled,
         )
+        if state in _TERMINAL_BATCH_STATES:
+            # Frozen once at the terminal observation; later reads return it
+            # unchanged instead of re-deriving (and never mutate it again).
+            record.frozen_view = view
+        return view

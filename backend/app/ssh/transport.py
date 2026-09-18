@@ -2,11 +2,13 @@
 
 Wiring:
 
-- ``make_connect_factory(settings, trust)`` builds the connect factory used by
-  ``SshManager``; it reads the user's OpenSSH environment (``~/.ssh/config``,
-  SSH agent, IdentityFile passthrough, ``~/.ssh/known_hosts``) and never
-  disables host-key checking, never copies key material, never stores
-  passwords;
+- ``make_connect_factory(settings, trust, credentials)`` builds the connect
+  factory used by ``SshManager``; it reads the user's OpenSSH environment
+  (``~/.ssh/config``, SSH agent, IdentityFile passthrough,
+  ``~/.ssh/known_hosts``) and never disables host-key checking, never copies
+  key material. An OPTIONAL stored password (Phase 4.2A) is looked up from
+  the credential store by server_id and unwrapped only here, at the single
+  asyncssh call site;
 - the app-owned trust store (fingerprints only) is enforced by
   ``_HostKeyGate.validate_host_public_key``: keys the user's known_hosts
   already trust are accepted natively by AsyncSSH before this callback runs;
@@ -29,6 +31,7 @@ import asyncssh
 
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.credentials.base import CredentialStore
 from app.models.server import HostKeyPrompt, ServerRecord
 from app.ssh.config_resolver import ConnectParams
 from app.ssh.connection import ConnectFactory, RemoteConnection
@@ -158,6 +161,7 @@ async def _connect(
     settings: Settings,
     trust: HostKeyTrust,
     user_known_hosts: Path,
+    password: str | None = None,
 ) -> asyncssh.SSHClientConnection:
     known_hosts = load_user_known_hosts(user_known_hosts)
     decision = HostKeyDecision()
@@ -189,6 +193,12 @@ async def _connect(
         # asyncssh resolves tunnel strings by DNS alone and must never see a
         # raw config alias (it would fail with getaddrinfo Errno 8).
         kwargs["tunnel"] = params.proxy_jump
+    if password is not None:
+        # OPTIONAL second factor: keys/agent remain PRIMARY and untouched —
+        # asyncssh tries all available methods normally. The plain-text value
+        # exists only in this local (set by the connect factory closure) and
+        # is never logged, repr'd, or persisted.
+        kwargs["password"] = password
     # NOTE: the user's ssh_config is intentionally NOT passed to asyncssh:
     # our resolver already extracted host/user/port/IdentityFile, and
     # asyncssh's stricter parser rejects some lines real OpenSSH tolerates
@@ -206,15 +216,37 @@ async def _connect(
         raise classify_connection_error(exc) from exc
 
 
-def make_connect_factory(settings: Settings, trust: HostKeyTrust) -> ConnectFactory:
-    """Build the default connect factory bound to the user's OpenSSH environment."""
+def make_connect_factory(
+    settings: Settings, trust: HostKeyTrust, credentials: CredentialStore | None = None
+) -> ConnectFactory:
+    """Build the default connect factory bound to the user's OpenSSH environment.
+
+    ``credentials`` optionally supplies per-server passwords (Phase 4.2A):
+    when a credential exists for ``params.server_id`` its SecretStr is
+    unwrapped EXACTLY here into a call-scoped local and handed to
+    ``_connect``. Without credentials (or without a server_id) nothing about
+    the connect behavior changes; key/agent auth stays primary.
+    """
 
     user_known_hosts = USER_KNOWN_HOSTS
 
     async def connect(params: ConnectParams) -> RemoteConnection:
-        return await _connect(
-            params, settings=settings, trust=trust, user_known_hosts=user_known_hosts
-        )
+        password: str | None = None
+        if credentials is not None and params.server_id is not None:
+            secret = credentials.get_password(params.server_id)
+            if secret is not None:
+                password = secret.get_secret_value()
+        try:
+            return await _connect(
+                params,
+                settings=settings,
+                trust=trust,
+                user_known_hosts=user_known_hosts,
+                password=password,
+            )
+        finally:
+            # Drop the plain-text secret as soon as the connect call ends.
+            del password
 
     return connect
 
@@ -236,6 +268,68 @@ class AsyncsshExecutor:
 def build_executor(manager: SshManager, server: ServerRecord) -> Executor:
     """Composition-root helper: adapt one managed server to the Executor protocol."""
     return AsyncsshExecutor(manager, server)
+
+
+# ---- verified host-key export (direct-auth domain; pure data leaves this module)
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedHostKey:
+    """A host key VERIFIED by a completed SSH handshake, as pure data.
+
+    No asyncssh type ever crosses this boundary: the OpenSSH-format public
+    line (``"<key_type> <base64>"``) and the SHA256 fingerprint travel as
+    plain strings. Private material is never represented.
+    """
+
+    key_type: str
+    openssh_public_key_line: str  # "ssh-ed25519 AAAA..." (openssh one-line form)
+    fingerprint: str  # "SHA256:..." OpenSSH display format
+
+    def known_hosts_entry(self, host: str, port: int) -> str:
+        """One app-owned known_hosts line for this key.
+
+        Non-default ports use the OpenSSH bracketed form ``[host]:port``;
+        port 22 uses the bare host. The entry is written ONLY to the
+        SGC-owned known_hosts file on the SOURCE server — the user's own
+        ``~/.ssh/known_hosts`` is never touched.
+        """
+        host_part = f"[{host}]:{port}" if port != 22 else host
+        return f"{host_part} {self.openssh_public_key_line}"
+
+
+async def verified_server_host_key(
+    manager: SshManager, server: ServerRecord
+) -> VerifiedHostKey | None:
+    """Export the verified host key of one managed server as pure data.
+
+    Reuses the manager's managed connection (connecting through the normal
+    verified handshake when needed) and reads the negotiated host key from
+    the established connection (``SSHClientConnection.get_server_host_key()``
+    — present in asyncssh 2.24). Returns None when the connection reports no
+    host key (e.g. GSS key exchange). No asyncssh type leaks past this
+    function; failures of the connect phase propagate as classified errors.
+    """
+
+    connection = await manager.acquire_connection(server)
+    underlying = connection.conn
+    if underlying is None:
+        return None
+    getter = getattr(underlying, "get_server_host_key", None)
+    if not callable(getter):
+        return None
+    key = getter()
+    if key is None:
+        return None
+    line = key.export_public_key(format_name="openssh").decode("ascii").strip()
+    key_type = line.split()[0] if line.split() else ""
+    if not line or not key_type:
+        return None
+    return VerifiedHostKey(
+        key_type=key_type,
+        openssh_public_key_line=line,
+        fingerprint=key.get_fingerprint(hash_name="sha256"),
+    )
 
 
 # ---- file-transfer runtime (the only asyncssh importer; transfer domain never sees it)
@@ -359,6 +453,12 @@ class SftpTransferSession:
         # drops the whole field group and setstat silently no-ops (field-
         # verified on OpenSSH sftp-server). One value goes to both fields.
         await self._sftp.setstat(path, asyncssh.SFTPAttrs(atime=mtime_s, mtime=mtime_s))
+
+    async def set_mode(self, path: str, mode: int) -> None:
+        # SFTPClient.chmod(path, mode) (asyncssh 2.24) maps to setstat with a
+        # permissions attr; failures propagate (direct-auth 0700/0600 must be
+        # enforced, never silently skipped).
+        await self._sftp.chmod(path, mode)
 
     async def rename(self, source: str, target: str) -> None:
         """Replace the destination atomically when possible.

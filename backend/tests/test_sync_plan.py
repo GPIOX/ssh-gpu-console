@@ -458,6 +458,89 @@ async def test_versions_get_separate_leaves(tmp_path: Path) -> None:
     assert plan.valid  # separate leaves never overlap
 
 
+# ---- 10b. automatic suggestions are collision-safe across artifacts ------------------------
+
+
+async def test_identical_names_in_one_plan_get_distinct_suggestions(tmp_path: Path) -> None:
+    sc = Scenario(tmp_path)
+    first = sc.add_artifact("dataset", "TWIN", "v1")
+    second = sc.add_artifact("dataset", "TWIN", "v1")
+    sc.add_placement(first, "srv-src", "/datasets/TWIN-one")
+    sc.add_placement(second, "srv-src", "/datasets/TWIN-two")
+    project_id = sc.add_project("CMOS", [first, second])
+    sc.factory.script["srv-src"] = FakeExecutor()
+    sc.set_roots("srv-tgt", dataset_root="/data")
+
+    plan = await sc.planner.build_plan(project_id, SyncPlanRequest(target_server_id="srv-tgt"))
+    paths = {item.artifact_id: item.target_path for item in plan.items}
+    assert paths[first] == "/data/TWIN--v1"  # first occurrence keeps the base leaf
+    assert paths[second] == f"/data/TWIN--v1--{second[:6]}"  # dedupe_leaves escalation
+    assert plan.valid and plan.error == ""  # escalated leaves never overlap
+
+
+async def test_suggestion_avoids_other_artifacts_recorded_placement(tmp_path: Path) -> None:
+    sc = Scenario(tmp_path)
+    first = sc.add_artifact("dataset", "TWIN", "v1")
+    second = sc.add_artifact("dataset", "TWIN", "v1")
+    sc.add_placement(first, "srv-src", "/datasets/TWIN-one")
+    sc.add_placement(second, "srv-src", "/datasets/TWIN-two")
+    project_one = sc.add_project("CMOS", [first])
+    project_two = sc.add_project("SIGMA", [second])
+    sc.factory.script["srv-src"] = FakeExecutor()
+    sc.set_roots("srv-tgt", dataset_root="/data")
+    request = SyncPlanRequest(target_server_id="srv-tgt")
+
+    first_plan = await sc.planner.build_plan(project_one, request)
+    assert first_plan.items[0].target_path == "/data/TWIN--v1"
+
+    # the first transfer completed and recorded its placement on the target;
+    # the second artifact (other project, same name+version) must not be
+    # pointed into that placement tree
+    sc.add_placement(first, "srv-tgt", "/data/TWIN--v1")
+
+    second_plan = await sc.planner.build_plan(project_two, request)
+    second_item = second_plan.items[0]
+    assert second_item.action is SyncAction.TRANSFER
+    assert second_item.target_path == f"/data/TWIN--v1--{second[:6]}"
+    assert second_item.target_path != first_plan.items[0].target_path
+    assert second_plan.valid and second_plan.error == ""
+
+
+async def test_suggestions_are_deterministic_across_plans(tmp_path: Path) -> None:
+    sc = Scenario(tmp_path)
+    first = sc.add_artifact("dataset", "TWIN", "v1")
+    second = sc.add_artifact("dataset", "TWIN", "v1")
+    sc.add_placement(first, "srv-src", "/datasets/TWIN-one")
+    sc.add_placement(second, "srv-src", "/datasets/TWIN-two")
+    project_id = sc.add_project("CMOS", [first, second])
+    sc.factory.script["srv-src"] = FakeExecutor()
+    sc.set_roots("srv-tgt", dataset_root="/data")
+
+    request = SyncPlanRequest(target_server_id="srv-tgt")
+    plan_one = await sc.planner.build_plan(project_id, request)
+    plan_two = await sc.planner.build_plan(project_id, request)
+    assert plan_one.items == plan_two.items  # same suggestion order -> same result
+    assert len({item.target_path for item in plan_one.items}) == 2
+
+
+async def test_exhausted_suggestions_become_unresolved(tmp_path: Path) -> None:
+    sc = Scenario(tmp_path)
+    twin = sc.add_artifact("dataset", "TWIN", "v1")
+    occupier = sc.add_artifact("dataset", "OCCUPIER")
+    base = "/data/TWIN--v1"
+    for suffix in sorted({"", f"--{twin[:6]}", f"--{twin[:8]}", f"--{twin[:12]}", f"--{twin}"}):
+        sc.add_placement(occupier, "srv-tgt", f"{base}{suffix}")
+    project_id = sc.add_project("CMOS", [twin])
+    sc.set_roots("srv-tgt", dataset_root="/data")
+
+    plan = await sc.planner.build_plan(project_id, SyncPlanRequest(target_server_id="srv-tgt"))
+    item = plan.items[0]
+    assert item.action is SyncAction.UNRESOLVED
+    assert item.reason == "suggested target path is already used by another artifact"
+    assert item.target_path is None
+    assert sc.plans.requests == []  # degraded before any transfer planning
+
+
 # ---- 11. deterministic source selection; VERIFIED sources win -------------------------------
 
 

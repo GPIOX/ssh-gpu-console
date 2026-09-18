@@ -22,6 +22,7 @@ import time
 
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.credentials.base import CredentialStore
 from app.models.server import ConnectionTestResult, HostKeyPrompt, ServerRecord
 from app.models.telemetry import ServerStatus
 from app.ssh.config_resolver import ConnectParams, SSHConfigResolver, resolve_connect_params
@@ -66,12 +67,13 @@ class SshManager:
         resolver: SSHConfigResolver | None = None,
         trust_store: HostKeyTrust | None = None,
         connect_factory: ConnectFactory | None = None,
+        credentials: CredentialStore | None = None,
     ) -> None:
         self.settings = settings
         self.resolver = resolver or SSHConfigResolver()
         self.trust_store = trust_store or HostKeyTrust(settings.data_dir / "trusted_host_keys.json")
         self._connect_factory: ConnectFactory = connect_factory or make_connect_factory(
-            settings, self.trust_store
+            settings, self.trust_store, credentials=credentials
         )
         self._managed: dict[str, ManagedConnection] = {}
         self._identities: dict[str, Identity] = {}
@@ -126,12 +128,16 @@ class SshManager:
             )
 
     def _params(self, server: ServerLike) -> ConnectParams:
-        return resolve_connect_params(
+        params = resolve_connect_params(
             server.ssh_host,
             self.resolver,
             username=server.username,
             port=server.port,
         )
+        # Attach the registry id (never the password): lets the connect
+        # factory look up an optional stored credential for THIS server.
+        params.server_id = server.server_id
+        return params
 
     # --- command path ---
 
@@ -184,6 +190,27 @@ class SshManager:
                 "SSH connection failed for %s: %s", server.display_name, connection.last_error
             )
             raise
+
+    async def acquire_connection(self, server: ServerRecord) -> ManagedConnection:
+        """Open (or reuse) the managed connection for one server, NO command runs.
+
+        Used by the direct-auth domain to inspect the verified host key of an
+        established connection. Shares the same global/per-server slots as
+        commands; the returned connection may be retired by close_server at
+        any later moment — callers must only perform read-only inspection.
+        Connect failures propagate as ExecutorError (same classification as
+        run()).
+        """
+
+        try:
+            await self._reject_if_backoff(server.server_id)
+            async with self._global_slots:
+                connection, slot = await self._get_entry(server)
+                async with slot:
+                    await self._acquire(server, connection)
+                    return connection
+        except ConnectError as exc:
+            raise ExecutorError(exc.code.value, exc.detail) from exc
 
     # --- onboarding / trust ---
 

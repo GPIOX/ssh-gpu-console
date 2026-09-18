@@ -81,6 +81,12 @@ class TransferSession(Protocol):
         """Set mtime (seconds precision); failures propagate to the caller."""
         ...
 
+    async def set_mode(self, path: str, mode: int) -> None:
+        """Set the permission bits of a remote path (SFTP chmod); failures
+        propagate to the caller (the direct-auth setup flow relies on 0700
+        dirs / 0600 files being enforced, never silently skipped)."""
+        ...
+
     async def rename(self, source: str, target: str) -> None: ...
 
     async def remove(self, path: str) -> None:

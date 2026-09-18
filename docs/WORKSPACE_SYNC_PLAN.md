@@ -1,7 +1,7 @@
 # Workspace Management & Cross-server Transfer — Design Contract (v3)
 
 Status: active contract for the Workspace (Phase 1) and Transfer (Phases 2–3) features;
-Phase 4 (project distribution & reconciliation) is in progress (§8).
+Phase 4 (project distribution & reconciliation) is complete (§8).
 Architecture ownership unchanged: module boundaries, wire models, sampling/persistence
 boundaries and acceptance are maintainer-owned; scoped changes only.
 
@@ -186,4 +186,13 @@ queued/planning/running/verifying.
 - Phase 2 (transfer MVP: local relay + direct rsync + auto planner) — complete.
 - Phase 3 (resume, incremental sync, symlink/target-lock/space/rsync hardening) —
   complete.
-- Phase 4 (project distribution & reconciliation) — in progress.
+- Phase 4 (project distribution & reconciliation) — complete. Delivered: the
+  distribution read model, sync planning, batch sync and the matrix/dialog
+  frontend.
+- Phase 4.2 (SSH credentials & direct transfer setup) — complete. Delivered:
+  CredentialStore (secure OS keyring / session-only), optional local password
+  auth, server→server direct-auth lifecycle (native → dedicated ED25519 key
+  → unavailable/relay), dedicated-key setup/repair/revoke, app-owned remote
+  known_hosts, direct rsync integration and the auth/direct-transfer UI.
+  Details: `docs/SSH_CREDENTIALS_AND_DIRECT_TRANSFER.md`. Real-machine LEVEL 2
+  dedicated-key setup awaits explicit user authorization.

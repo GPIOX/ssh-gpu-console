@@ -402,6 +402,9 @@ export function SettingsPage() {
                 {tf(t.fleet.removeConfirm, { name: removeTarget.display_name })}
               </Button>
             </div>
+            {/* Non-blocking hint (spec item 30): deleting here never revokes
+                the console's dedicated direct-transfer keys on other machines. */}
+            <p className="settings-prefs__note">{t.fleet.removeDirectHint}</p>
           </>
         )}
       </Dialog>

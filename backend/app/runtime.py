@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # imports exist only for typing; nothing is imported at runtime
     from app.core.config import Settings
+    from app.direct_auth.service import DirectAuthService
     from app.ssh.manager import SshManager
     from app.telemetry.service import TelemetryService
     from app.transfer.batch import BatchRegistry
@@ -29,6 +30,7 @@ class Runtime:
     transfers: TransferService | None = None
     distribution: DistributionService | None = None
     batches: BatchRegistry | None = None
+    direct_auth: DirectAuthService | None = None
 
 
 _runtime: Runtime | None = None

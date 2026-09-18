@@ -8,6 +8,11 @@ import type {
   AliasEntry,
   ConnectionTestResult,
   CpuInfo,
+  DirectAuthList,
+  DirectAuthMethod,
+  DirectAuthPair,
+  DirectAuthPeer,
+  DirectAuthReason,
   FleetEntry,
   FleetSummary,
   GpuAvailability,
@@ -17,7 +22,9 @@ import type {
   HostKeyPrompt,
   MemoryInfo,
   NetworkInterfaceInfo,
+  PasswordStorage,
   ProcessInfo,
+  ServerAuthStatus,
   ServerRecord,
   ServerSnapshot,
   ServerStatus,
@@ -154,6 +161,114 @@ export function normalizeConnectionTestResult(raw: unknown): ConnectionTestResul
     detail,
     latency_ms: num(raw.latency_ms),
     pending_host_key: normalizeHostKeyPrompt(raw.pending_host_key),
+  };
+}
+
+// -- server auth + direct transfer (phase 4.2B/4.2D) ---------------------------
+
+export const DIRECT_AUTH_REASONS = [
+  "route_unreachable",
+  "host_key_unknown",
+  "host_key_mismatch",
+  "authentication_failed",
+  "rsync_missing_source",
+  "rsync_missing_target",
+  "dedicated_key_missing",
+  "authorized_key_missing",
+  "remote_key_invalid",
+  "source_known_hosts_missing",
+  "keygen_missing_source",
+  "unknown",
+] as const;
+
+/** Reason code: a known taxonomy member, or the raw string verbatim. */
+export function directAuthReason(value: unknown): DirectAuthReason | null {
+  return typeof value === "string" && (DIRECT_AUTH_REASONS as readonly string[]).includes(value)
+    ? (value as DirectAuthReason)
+    : typeof value === "string" && value !== ""
+      ? (value as DirectAuthReason)
+      : null;
+}
+
+const DIRECT_AUTH_METHODS = ["native", "sgc_key"] as const;
+
+function directAuthMethod(value: unknown): DirectAuthMethod | null {
+  return typeof value === "string" && (DIRECT_AUTH_METHODS as readonly string[]).includes(value)
+    ? (value as DirectAuthMethod)
+    : null;
+}
+
+const PASSWORD_STORAGES = ["system_keyring", "session_only"] as const;
+
+function passwordStorage(value: unknown): PasswordStorage | null {
+  return typeof value === "string" && (PASSWORD_STORAGES as readonly string[]).includes(value)
+    ? (value as PasswordStorage)
+    : null;
+}
+
+/** GET /servers/{id}/auth. Defensive: only reads the pinned fields. */
+export function normalizeServerAuthStatus(raw: unknown): ServerAuthStatus | null {
+  if (!isRecord(raw)) return null;
+  const effectiveHost = str(raw.effective_host);
+  const effectivePort = int(raw.effective_port);
+  if (effectiveHost === null || effectivePort === null) return null;
+  return {
+    ssh_config_used: bool(raw.ssh_config_used, false),
+    effective_host: effectiveHost,
+    effective_user: str(raw.effective_user),
+    effective_port: effectivePort,
+    identity_files: int(raw.identity_files) ?? 0,
+    agent_available: bool(raw.agent_available, false),
+    proxy_jump_configured: bool(raw.proxy_jump_configured, false),
+    password_configured: bool(raw.password_configured, false),
+    password_storage: passwordStorage(raw.password_storage),
+  };
+}
+
+/** One (source → target) pair; unknown/missing fields degrade to nulls/false. */
+export function normalizeDirectAuthPeer(raw: unknown): DirectAuthPeer | null {
+  if (!isRecord(raw)) return null;
+  const targetId = str(raw.target_server_id);
+  if (targetId === null) return null;
+  return {
+    target_server_id: targetId,
+    configured: bool(raw.configured, false),
+    method: directAuthMethod(raw.method),
+    available: typeof raw.available === "boolean" ? raw.available : null,
+    reason: directAuthReason(raw.reason),
+    checked_at: str(raw.checked_at),
+  };
+}
+
+/** One (source → target) pair from the zero-SSH pairs listing; reads BOTH ids
+ *  and degrades unknown/missing fields to nulls/false. */
+export function normalizeDirectAuthPair(raw: unknown): DirectAuthPair | null {
+  if (!isRecord(raw)) return null;
+  const sourceId = str(raw.source_server_id);
+  const targetId = str(raw.target_server_id);
+  if (sourceId === null || targetId === null) return null;
+  return {
+    source_server_id: sourceId,
+    target_server_id: targetId,
+    configured: bool(raw.configured, false),
+    method: directAuthMethod(raw.method),
+    available: typeof raw.available === "boolean" ? raw.available : null,
+    reason: directAuthReason(raw.reason),
+    checked_at: str(raw.checked_at),
+  };
+}
+
+/** GET /servers/{id}/direct-auth — every pair (both directions) involving the
+ *  queried server. Defensive: only reads the pinned fields. */
+export function normalizeDirectAuthList(raw: unknown): DirectAuthList | null {
+  if (!isRecord(raw)) return null;
+  const serverId = str(raw.server_id);
+  if (serverId === null) return null;
+  return {
+    server_id: serverId,
+    pairs: arrayOf(raw.pairs)
+      .map(normalizeDirectAuthPair)
+      .filter((pair): pair is DirectAuthPair => pair !== null),
   };
 }
 

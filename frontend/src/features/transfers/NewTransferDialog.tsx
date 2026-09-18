@@ -12,6 +12,12 @@
  * so it only runs on deliberate, complete input. The preview also surfaces the
  * preflight's space warning (or, quietly, the target's free space) and the
  * effective project excludes.
+ *
+ * Phase 4.2D: when the plan says direct rsync is unavailable, the reason area
+ * gains a humanized lead line (the raw planner reason stays as secondary mono
+ * detail), a 配置直连 button opening DirectAuthSetupDialog for the current
+ * (source → target) pair, and — after a change in that dialog — an explicit
+ * 重新规划 action that re-runs the plan request.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -35,6 +41,7 @@ import type {
   ProjectRecord,
 } from "../../types/workspace";
 import { artifactLabel } from "../workspace/shared";
+import { DirectAuthSetupDialog } from "./DirectAuthSetupDialog";
 import { cx } from "../../utils/cx";
 import "./transfers.css";
 
@@ -182,6 +189,11 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
   const [planError, setPlanError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  // Phase 4.2D: 配置直连 setup dialog + explicit re-plan trigger. planNonce
+  // re-runs the debounced plan effect without touching any form field.
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [directChanged, setDirectChanged] = useState(false);
+  const [planNonce, setPlanNonce] = useState(0);
   const planSeq = useRef(0);
 
   const artifactPlacements = placements.filter((p) => p.artifact_id === artifactId);
@@ -224,6 +236,9 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
     setPlan(null);
     setPlanError(null);
     setCreateError(null);
+    setSetupOpen(false);
+    setDirectChanged(false);
+    setPlanNonce(0);
   }, [open, prefill, artifacts, placements, projects, servers]);
 
   // Target path suggestion from the target server's kind root + name:version,
@@ -253,7 +268,8 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
   const request = buildRequest(artifactId, placementId, targetServerId, targetPath, strategy);
 
   // Debounced plan: complete form state re-runs the availability check after
-  // 400 ms; out-of-order responses are dropped by sequence number.
+  // 400 ms; out-of-order responses are dropped by sequence number. planNonce
+  // (重新规划) forces one extra run for the unchanged form.
   useEffect(() => {
     if (!open || request === null) {
       setPlan(null);
@@ -279,9 +295,9 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
         });
     }, PLAN_DEBOUNCE_MS);
     return () => clearTimeout(handle);
-    // request is derived from exactly these fields.
+    // request is derived from exactly these fields (+ the explicit re-plan nonce).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, artifactId, placementId, targetServerId, targetPath, strategy]);
+  }, [open, artifactId, placementId, targetServerId, targetPath, strategy, planNonce]);
 
   const submit = async (): Promise<void> => {
     if (request === null) return;
@@ -299,6 +315,21 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
 
   const directAvailable = plan?.strategy_available["direct_rsync"] === true;
   const relayAvailable = plan?.strategy_available["local_relay"] === true;
+  const directPair =
+    sourceServerId !== undefined &&
+    targetServerId !== "" &&
+    sourceServerId !== "" &&
+    targetServerId !== sourceServerId;
+
+  const sourceName =
+    servers.find((s) => s.server_id === sourceServerId)?.display_name ?? sourceServerId ?? "";
+  const targetName =
+    servers.find((s) => s.server_id === targetServerId)?.display_name ?? targetServerId;
+
+  const replan = () => {
+    setDirectChanged(false);
+    setPlanNonce((nonce) => nonce + 1);
+  };
 
   return (
     <Dialog open={open} onClose={closeDialog} title={t.transfers.dialogTitle} width={480}>
@@ -430,7 +461,25 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
                     {directAvailable ? t.transfers.available : t.transfers.unavailable}
                   </Chip>
                 </div>
-                {!directAvailable && <p className="tf-plan__reason">{t.transfers.noDirectSsh}</p>}
+                {!directAvailable && (
+                  <>
+                    <p className="tf-plan__reason">
+                      {tf(t.transfers.reasonLead, { text: t.transfers.authFailReason })}
+                    </p>
+                    {directPair && (
+                      <div className="tf-plan__direct">
+                        <Button onClick={() => setSetupOpen(true)}>
+                          {t.transfers.configureDirect}
+                        </Button>
+                        {directChanged && (
+                          <Button variant="primary" onClick={replan}>
+                            {t.transfers.replan}
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
                 <div className="tf-plan__row">
                   <span>{t.transfers.strategyRelay}</span>
                   <Chip tone={relayAvailable ? "ok" : "crit"}>
@@ -476,6 +525,18 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
           </Button>
         </div>
       </form>
+
+      {directPair && sourceServerId !== undefined && (
+        <DirectAuthSetupDialog
+          open={setupOpen}
+          onClose={() => setSetupOpen(false)}
+          sourceId={sourceServerId}
+          sourceName={sourceName}
+          targetId={targetServerId}
+          targetName={targetName}
+          onReplan={replan}
+        />
+      )}
     </Dialog>
   );
 }

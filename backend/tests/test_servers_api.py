@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import stat as stat_module
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -10,6 +14,10 @@ import pytest
 from app.api.v1.servers import router
 from app.core.config import Settings
 from app.core.errors import ConflictError
+from app.credentials.base import CredentialStorageMode, CredentialStoreError
+from app.credentials.memory import SessionMemoryCredentialStore
+from app.credentials.store import set_credential_store
+from app.models.credentials import ServerPasswordSet
 from app.models.server import (
     ConnectionTestResult,
     HostKeyPrompt,
@@ -22,9 +30,12 @@ from app.persistence.json_store import JsonFileStore
 from app.runtime import Runtime, set_runtime
 from app.servers.discovery import SSHConfigDiscovery, set_default_discovery
 from app.servers.registry import ServerRegistry, get_default_registry, set_default_registry
-from app.ssh.config_resolver import SSHConfigResolver
+from app.ssh.config_resolver import ConnectParams, SSHConfigResolver
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
+
+SECRET = "SGC_SUPER_SECRET_TEST_928361"
 
 
 class FakeSshManager:
@@ -36,6 +47,18 @@ class FakeSshManager:
         self.trust_calls: list[HostKeyPrompt] = []
         self.result = ConnectionTestResult(
             ok=True, status=ServerStatus.ONLINE.value, detail="connected", latency_ms=1.5
+        )
+        self.auth_params: ConnectParams | None = None
+
+    def resolve_params_for(self, server: ServerRecord) -> ConnectParams:
+        if self.auth_params is not None:
+            return self.auth_params
+        return ConnectParams(
+            host=server.ssh_host,
+            port=server.port or 22,
+            username=server.username,
+            source="default",
+            server_id=server.server_id,
         )
 
     async def close_server(self, server_id: str) -> None:
@@ -262,3 +285,327 @@ def test_default_registry_accessor_roundtrip(tmp_path: Path) -> None:
         set_default_registry(None)
     assert get_default_registry() is not registry  # rebuilt lazily from settings
     set_default_registry(None)
+
+
+# --- password credentials (Phase 4.2A) ---------------------------------------
+
+
+@pytest.fixture
+def credentials() -> Iterator[SessionMemoryCredentialStore]:
+    store = SessionMemoryCredentialStore()
+    set_credential_store(store)
+    try:
+        yield store
+    finally:
+        set_credential_store(None)
+
+
+class _RaisingStore(SessionMemoryCredentialStore):
+    """Store whose backend fails on one operation; messages carry no secret."""
+
+    def __init__(self, fail: str) -> None:
+        super().__init__()
+        self._fail = fail  # "set" or "delete"
+
+    def set_password(self, server_id: str, password: SecretStr) -> None:
+        if self._fail == "set":
+            raise CredentialStoreError("keyring write failed: BackendUnavailable")
+        super().set_password(server_id, password)
+
+    def delete_password(self, server_id: str) -> None:
+        if self._fail == "delete":
+            raise CredentialStoreError("keyring delete failed: BackendUnavailable")
+        super().delete_password(server_id)
+
+
+def _put_password(client: TestClient, server_id: str, password: str = SECRET) -> Any:
+    return client.put(
+        f"/api/v1/servers/{server_id}/credentials/password", json={"password": password}
+    )
+
+
+def test_password_set_and_delete_roundtrip_via_api(
+    api: tuple[TestClient, ServerRegistry, FakeSshManager],
+    credentials: SessionMemoryCredentialStore,
+) -> None:
+    client, _registry, manager = api
+    server_id = _create(client)["server_id"]
+
+    response = _put_password(client, server_id)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"configured": True, "storage": "session_only"}
+    assert credentials.has_password(server_id)
+    assert credentials.get_password(server_id) is not None
+    assert credentials.get_password(server_id).get_secret_value() == SECRET  # type: ignore[union-attr]
+    assert manager.closed == [server_id]  # connection retired for reconnect
+
+    removed = client.delete(f"/api/v1/servers/{server_id}/credentials/password")
+    assert removed.status_code == 200
+    assert removed.json() == {"configured": False, "storage": None}
+    assert not credentials.has_password(server_id)
+    assert manager.closed == [server_id, server_id]
+
+
+def test_password_delete_absent_is_fine(
+    api: tuple[TestClient, ServerRegistry, FakeSshManager],
+    credentials: SessionMemoryCredentialStore,
+) -> None:
+    client, _registry, manager = api
+    server_id = _create(client)["server_id"]
+    response = client.delete(f"/api/v1/servers/{server_id}/credentials/password")
+    assert response.status_code == 200
+    assert response.json() == {"configured": False, "storage": None}
+    assert manager.closed == [server_id]
+
+
+def test_password_and_auth_routes_404_for_unknown_server(
+    api: tuple[TestClient, ServerRegistry, FakeSshManager],
+) -> None:
+    client, _registry, _manager = api
+    assert client.get("/api/v1/servers/nope/auth").status_code == 404
+    assert (
+        client.put(
+            "/api/v1/servers/nope/credentials/password", json={"password": SECRET}
+        ).status_code
+        == 404
+    )
+    assert client.delete("/api/v1/servers/nope/credentials/password").status_code == 404
+
+
+def test_password_body_validation_rejects_empty_long_and_extra(
+    api: tuple[TestClient, ServerRegistry, FakeSshManager],
+) -> None:
+    client, _registry, _manager = api
+    server_id = _create(client)["server_id"]
+    assert (
+        client.put(
+            f"/api/v1/servers/{server_id}/credentials/password", json={"password": ""}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.put(
+            f"/api/v1/servers/{server_id}/credentials/password", json={"password": "x" * 1025}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.put(
+            f"/api/v1/servers/{server_id}/credentials/password",
+            json={"password": SECRET, "extra": True},
+        ).status_code
+        == 422
+    )
+
+
+def test_password_set_storage_failure_is_409_without_echo(
+    api: tuple[TestClient, ServerRegistry, FakeSshManager],
+    credentials: SessionMemoryCredentialStore,
+) -> None:
+    client, _registry, manager = api
+    server_id = _create(client)["server_id"]
+    set_credential_store(_RaisingStore("set"))
+
+    response = _put_password(client, server_id)
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["message"] == "password credential could not be stored"
+    assert SECRET not in response.text
+    assert credentials.has_password(server_id) is False  # nothing stored
+    assert manager.closed == []  # no close on failure
+
+
+def test_password_delete_storage_failure_is_409(
+    api: tuple[TestClient, ServerRegistry, FakeSshManager],
+) -> None:
+    client, _registry, _manager = api
+    server_id = _create(client)["server_id"]
+    store = _RaisingStore("delete")
+    store.set_password(server_id, ServerPasswordSet(password=SECRET).password)
+    set_credential_store(store)
+
+    response = client.delete(f"/api/v1/servers/{server_id}/credentials/password")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["message"] == "password credential could not be removed"
+    assert SECRET not in response.text
+
+
+def test_delete_server_removes_password_best_effort(
+    api: tuple[TestClient, ServerRegistry, FakeSshManager],
+    credentials: SessionMemoryCredentialStore,
+) -> None:
+    client, _registry, manager = api
+    server_id = _create(client)["server_id"]
+    _put_password(client, server_id)
+    assert credentials.has_password(server_id)
+
+    deleted = client.delete(f"/api/v1/servers/{server_id}")
+    assert deleted.status_code == 204
+    assert not credentials.has_password(server_id)  # best-effort cleanup ran
+    assert manager.closed == [server_id, server_id]  # PUT + delete-server
+
+
+def test_delete_server_succeeds_even_when_credential_cleanup_fails(
+    api: tuple[TestClient, ServerRegistry, FakeSshManager],
+    credentials: SessionMemoryCredentialStore,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, registry, _manager = api
+    server_id = _create(client)["server_id"]
+    store = _RaisingStore("delete")
+    store.set_password(server_id, ServerPasswordSet(password=SECRET).password)
+    set_credential_store(store)
+
+    with caplog.at_level("DEBUG"):
+        deleted = client.delete(f"/api/v1/servers/{server_id}")
+
+    assert deleted.status_code == 204  # deletion itself succeeded
+    assert client.get("/api/v1/servers").json() == []
+    assert registry.count() == 0
+    assert any(
+        "password credential cleanup failed" in record.getMessage() for record in caplog.records
+    )
+    assert SECRET not in caplog.text
+
+
+def test_auth_status_reports_params_and_agent_socket(
+    api: tuple[TestClient, ServerRegistry, FakeSshManager],
+    credentials: SessionMemoryCredentialStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import socket
+
+    client, _registry, manager = api
+    server_id = _create(client)["server_id"]
+    identity_one = tmp_path / "id_ed25519"
+    identity_two = tmp_path / "id_rsa"
+    identity_one.write_text("")
+    manager.auth_params = ConnectParams(
+        host="10.0.0.10",
+        port=2201,
+        username="deploy",
+        identity_files=[identity_one, identity_two],
+        proxy_jump="jump@10.0.0.9:2222",
+        source="ssh_config",
+        server_id=server_id,
+    )
+
+    # A real AF_UNIX socket (bound, never connected to). The path must stay
+    # short enough for sockaddr_un, so it lives in the system temp dir.
+    socket_dir = tempfile.mkdtemp(prefix="sgc-agent-")
+    agent_socket = Path(socket_dir) / "a.sock"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(str(agent_socket))
+        monkeypatch.setenv("SSH_AUTH_SOCK", str(agent_socket))
+        assert stat_module.S_ISSOCK(agent_socket.stat().st_mode)
+
+        status = client.get(f"/api/v1/servers/{server_id}/auth")
+        assert status.status_code == 200, status.text
+        assert status.json() == {
+            "ssh_config_used": True,
+            "effective_host": "10.0.0.10",
+            "effective_user": "deploy",
+            "effective_port": 2201,
+            "identity_files": 2,
+            "agent_available": True,
+            "proxy_jump_configured": True,
+            "password_configured": False,
+            "password_storage": None,
+        }
+    finally:
+        sock.close()
+        with contextlib.suppress(OSError):
+            os.unlink(agent_socket)
+        with contextlib.suppress(OSError):
+            os.rmdir(socket_dir)
+
+    # No SSH_AUTH_SOCK: agent unavailable.
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+    assert client.get(f"/api/v1/servers/{server_id}/auth").json()["agent_available"] is False
+
+    # SSH_AUTH_SOCK pointing at a regular file: not a socket, unavailable.
+    regular = tmp_path / "not-a-socket"
+    regular.write_text("")
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(regular))
+    assert client.get(f"/api/v1/servers/{server_id}/auth").json()["agent_available"] is False
+
+    # Missing socket path: unavailable.
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "missing.sock"))
+    assert client.get(f"/api/v1/servers/{server_id}/auth").json()["agent_available"] is False
+
+    # Defaults: no ssh_config source, no proxy jump.
+    manager.auth_params = None
+    default_status = client.get(f"/api/v1/servers/{server_id}/auth").json()
+    assert default_status["ssh_config_used"] is False
+    assert default_status["proxy_jump_configured"] is False
+    assert default_status["effective_host"] == "lab-host"
+
+    # With a configured password the storage mode is surfaced.
+    _put_password(client, server_id)
+    configured = client.get(f"/api/v1/servers/{server_id}/auth").json()
+    assert configured["password_configured"] is True
+    assert configured["password_storage"] == CredentialStorageMode.SESSION_ONLY.value
+
+
+def test_password_secret_never_leaks_through_api_or_disk(
+    api: tuple[TestClient, ServerRegistry, FakeSshManager],
+    credentials: SessionMemoryCredentialStore,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The leak battery: the PUT body secret appears NOWHERE — not in any API
+    response, not in any JSON file under the data dir, not in repr(), and not
+    in any log record emitted by the PUT/DELETE/delete-server flows."""
+
+    client, _registry, _manager = api
+    server_id = _create(client)["server_id"]
+
+    with caplog.at_level("DEBUG"):
+        stored = _put_password(client, server_id)
+        listed = client.get("/api/v1/servers")
+        auth = client.get(f"/api/v1/servers/{server_id}/auth")
+        removed = client.delete(f"/api/v1/servers/{server_id}/credentials/password")
+        _put_password(client, server_id)
+        deleted = client.delete(f"/api/v1/servers/{server_id}")
+
+    assert stored.status_code == 200
+    assert removed.status_code == 200
+    assert deleted.status_code == 204
+
+    # (a) GET /servers: no secret, and no password field at all.
+    for record in listed.json():
+        assert SECRET not in str(record)
+        assert "password" not in record
+    # (b) GET auth status: no secret.
+    assert SECRET not in auth.text
+    # (e) logs over PUT/DELETE/delete-server flows: no secret anywhere.
+    assert SECRET not in caplog.text
+    for record in caplog.records:
+        assert SECRET not in record.getMessage()
+
+    # (c)+(f-scan) every *.json file under the tmp data dir: no secret.
+    json_files = list(tmp_path.rglob("*.json"))
+    assert json_files, "expected at least registry.json under the data dir"
+    for path in json_files:
+        assert SECRET not in path.read_text(encoding="utf-8", errors="replace"), str(path)
+
+    # (d) repr/str/json of the wire model never expose the value.
+    body = ServerPasswordSet(password=SecretStr(SECRET))
+    assert SECRET not in repr(body)
+    assert SECRET not in str(body)
+    assert SECRET not in body.model_dump_json()
+    assert SECRET not in str(body.password)
+    assert repr(body.password) == "SecretStr('**********')"
+
+    # (f) error path: store raising -> 409 response carries no secret.
+    set_credential_store(_RaisingStore("set"))
+    try:
+        failure = _put_password(client, _create(client)["server_id"])
+        assert failure.status_code == 409
+        assert SECRET not in failure.text
+        assert failure.json()["detail"]["message"] == "password credential could not be stored"
+    finally:
+        set_credential_store(credentials)

@@ -96,10 +96,23 @@ class SyncPlanner:
         snapshot_by_placement = {
             item.placement_id: item for item in snapshot.items if item.placement_id is not None
         }
+        # Plan-scoped suggestion registry (target path -> owning artifact id):
+        # every automatic suggestion is claimed here so later items in the same
+        # plan (and, via recorded placements, later plans) never collide with it.
+        suggested: dict[str, str] = {}
+        target_placements = [
+            placement
+            for placement in self._workspace.placements()
+            if placement.server_id == request.target_server_id
+        ]
         items: list[ArtifactSyncItem] = []
         for artifact_id in artifact_ids:
             artifact = self._workspace.artifact(artifact_id)  # NotFoundError -> 404
-            items.append(await self._plan_item(artifact, request, snapshot_by_placement))
+            items.append(
+                await self._plan_item(
+                    artifact, request, snapshot_by_placement, target_placements, suggested
+                )
+            )
 
         valid, error = _overlap_error(items)
         return ProjectSyncPlan(
@@ -119,6 +132,8 @@ class SyncPlanner:
         artifact: ArtifactRecord,
         request: SyncPlanRequest,
         snapshot: dict[str, ArtifactServerDistribution],
+        target_placements: list[PlacementRecord],
+        suggested: dict[str, str],
     ) -> ArtifactSyncItem:
         label = f"{artifact.name}:{artifact.version}" if artifact.version else artifact.name
         target = next(
@@ -177,8 +192,8 @@ class SyncPlanner:
         # TRANSFER: resolve the target path first (local, no SSH) so a missing
         # root is reported without any remote round trips, then pick a source.
         if target_path is None:
-            target_path = self._suggested_target_path(artifact, request.target_server_id)
-            if target_path is None:
+            base = self._suggested_target_path(artifact, request.target_server_id)
+            if base is None:
                 return _item(
                     artifact,
                     label,
@@ -186,6 +201,22 @@ class SyncPlanner:
                     SyncAction.UNRESOLVED,
                     "target root not configured on server",
                 )
+            taken = {
+                normalize_remote_path(placement.remote_path)
+                for placement in target_placements
+                if placement.artifact_id != artifact.artifact_id
+            }
+            taken.update(suggested)
+            target_path = _claim_suggestion(base, artifact.artifact_id, taken)
+            if target_path is None:
+                return _item(
+                    artifact,
+                    label,
+                    target_status,
+                    SyncAction.UNRESOLVED,
+                    "suggested target path is already used by another artifact",
+                )
+            suggested[target_path] = artifact.artifact_id
 
         selected, alternatives, failures = await self._select_source(
             artifact, request.target_server_id, snapshot
@@ -324,7 +355,8 @@ class SyncPlanner:
     # ---- local helpers ---------------------------------------------------------------
 
     def _suggested_target_path(self, artifact: ArtifactRecord, server_id: str) -> str | None:
-        """Server-root suggestion; never a guessed default path."""
+        """Base server-root suggestion (before collision escalation); never a
+        guessed default path."""
         try:
             roots = self._workspace.server_roots(server_id)
         except NotFoundError:
@@ -334,6 +366,24 @@ class SyncPlanner:
             return None
         leaf = safe_artifact_leaf(artifact.name, artifact.version, artifact.artifact_id)
         return normalize_remote_path(f"{root.rstrip('/')}/{leaf}")
+
+
+def _claim_suggestion(base: str, artifact_id: str, taken: set[str]) -> str | None:
+    """Claim a non-colliding automatic target path; None when exhausted.
+
+    Escalates exactly like :func:`app.workspace.paths.dedupe_leaves`: the base
+    leaf keeps its path when free, otherwise "--" plus a prefix of the
+    artifact id (6, 8, 12 characters, then the full id) is appended. The
+    caller records the claimed path in the plan-scoped registry; repeated
+    calls with the same inputs return the same path (no ``hash()``).
+    """
+    if base not in taken:
+        return base
+    for width in (6, 8, 12, len(artifact_id)):
+        candidate = f"{base}--{artifact_id[:width]}"
+        if candidate not in taken:
+            return candidate
+    return None
 
 
 def _needs_transfer(kind: ArtifactKind, present: bool, refresh_code: bool) -> bool:

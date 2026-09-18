@@ -375,7 +375,7 @@ async def test_state_derivation_matrix() -> None:
     def view(states: dict[str, TransferState]) -> TransferBatch:
         return registry.get(batch.batch_id, states)
 
-    # planning/verifying count as running
+    # planning/verifying count as running (still derivable: not terminal yet)
     planning = view(
         {
             "j-1": TransferState.PLANNING,
@@ -395,43 +395,108 @@ async def test_state_derivation_matrix() -> None:
     assert done.state is TransferBatchState.COMPLETED
     assert done.completed_jobs == 3
 
-    mixed = view(
-        {
-            "j-1": TransferState.FAILED,
-            "j-2": TransferState.COMPLETED,
-            "j-3": TransferState.COMPLETED,
-        }
+    # the first terminal read froze the final view: a later read where the job
+    # ids are unknown (evicted history) no longer flips the batch to QUEUED
+    evicted = view({})
+    assert evicted == done
+    assert evicted.state is TransferBatchState.COMPLETED
+    assert evicted.completed_jobs == 3
+
+    # terminal mixes below each get their own batch: a record freezes at its
+    # FIRST terminal observation, so one batch cannot show two terminal states
+    async def frozen_batch(states: list[TransferState]) -> TransferBatch:
+        job_ids = [f"j-x{index}" for index in range(len(states))]
+        pending = iter(job_ids)
+        started = await registry.start(
+            project_id="p-1",
+            target_server_id="srv-tgt",
+            transfer_items=[_transfer_item(f"a-x{index}") for index in range(len(states))],
+            create_job=lambda _item: next(pending),
+        )
+        return registry.get(started.batch_id, dict(zip(job_ids, states, strict=True)))
+
+    mixed = await frozen_batch(
+        [TransferState.FAILED, TransferState.COMPLETED, TransferState.COMPLETED]
     )
     assert mixed.state is TransferBatchState.PARTIAL_FAILED
     assert mixed.failed_jobs == 1 and mixed.completed_jobs == 2
 
-    all_failed = view({job_id: TransferState.FAILED for job_id in ("j-1", "j-2", "j-3")})
+    all_failed = await frozen_batch([TransferState.FAILED] * 3)
     assert all_failed.state is TransferBatchState.FAILED
 
-    failed_and_cancelled = view(
-        {
-            "j-1": TransferState.FAILED,
-            "j-2": TransferState.CANCELLED,
-            "j-3": TransferState.CANCELLED,
-        }
+    failed_and_cancelled = await frozen_batch(
+        [TransferState.FAILED, TransferState.CANCELLED, TransferState.CANCELLED]
     )
     assert failed_and_cancelled.state is TransferBatchState.FAILED
 
-    all_cancelled = view({job_id: TransferState.CANCELLED for job_id in ("j-1", "j-2", "j-3")})
+    all_cancelled = await frozen_batch([TransferState.CANCELLED] * 3)
     assert all_cancelled.state is TransferBatchState.CANCELLED
 
-    cancelled_and_completed = view(
-        {
-            "j-1": TransferState.CANCELLED,
-            "j-2": TransferState.COMPLETED,
-            "j-3": TransferState.COMPLETED,
-        }
+    cancelled_and_completed = await frozen_batch(
+        [TransferState.CANCELLED, TransferState.COMPLETED, TransferState.COMPLETED]
     )
     assert cancelled_and_completed.state is TransferBatchState.PARTIAL_FAILED
 
-    # finished batches are archived on read but still reachable; unknown job
-    # ids degrade to QUEUED (spec: missing state counts as queued)
-    assert view({}).state is TransferBatchState.QUEUED
+
+# ---- 5b. terminal batches keep their frozen snapshot after job eviction -----------------
+
+
+async def test_completed_batch_freezes_against_job_eviction() -> None:
+    registry = BatchRegistry()
+    ids = iter(["j-1"])
+    batch = await registry.start(
+        project_id="p-1",
+        target_server_id="srv-tgt",
+        transfer_items=[_transfer_item("a-1")],
+        create_job=lambda _item: next(ids),
+    )
+    done = registry.get(batch.batch_id, {"j-1": TransferState.COMPLETED})
+    assert done.state is TransferBatchState.COMPLETED and done.completed_jobs == 1
+
+    # the job later falls out of the transfer history (simulated eviction):
+    # the batch keeps its final terminal snapshot instead of flipping back
+    evicted = registry.get(batch.batch_id, {})
+    assert evicted == done
+    assert evicted.state is TransferBatchState.COMPLETED
+    assert evicted.completed_jobs == 1 and evicted.queued_jobs == 0
+    assert evicted.total_jobs == 1
+    assert registry.list({}) == [evicted]  # listed (frozen) as well
+
+
+async def test_partial_failed_batch_freezes_against_job_eviction() -> None:
+    registry = BatchRegistry()
+    ids = iter(["j-1", "j-2"])
+    batch = await registry.start(
+        project_id="p-1",
+        target_server_id="srv-tgt",
+        transfer_items=[_transfer_item("a-1"), _transfer_item("a-2")],
+        create_job=lambda _item: next(ids),
+    )
+    mixed = registry.get(
+        batch.batch_id, {"j-1": TransferState.FAILED, "j-2": TransferState.COMPLETED}
+    )
+    assert mixed.state is TransferBatchState.PARTIAL_FAILED
+    assert mixed.failed_jobs == 1 and mixed.completed_jobs == 1
+
+    evicted = registry.get(batch.batch_id, {})
+    assert evicted == mixed
+    assert evicted.state is TransferBatchState.PARTIAL_FAILED
+    assert evicted.failed_jobs == 1 and evicted.completed_jobs == 1
+
+
+async def test_empty_batch_freezes_completed_from_first_view() -> None:
+    registry = BatchRegistry()
+    empty = await registry.start(
+        project_id="p-1",
+        target_server_id="srv-tgt",
+        transfer_items=[],
+        create_job=_unexpected_create,
+    )
+    assert empty.state is TransferBatchState.COMPLETED  # terminal from the first view
+
+    again = registry.get(empty.batch_id, {})
+    assert again == empty  # repeated reads return an equal (frozen) view
+    assert registry.list({}) == [again]
 
 
 async def test_empty_batch_is_completed_and_listing_is_newest_first() -> None:

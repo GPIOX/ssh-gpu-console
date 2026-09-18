@@ -14,7 +14,7 @@ import shlex
 from typing import TYPE_CHECKING
 
 from app.collectors.base import ExecutorLike
-from app.models.transfer import TransferJob, TransferPlan, TransferStrategy
+from app.models.transfer import DedicatedKeyOptions, TransferJob, TransferPlan, TransferStrategy
 from app.ssh.file_transfer import ServerLike
 
 if TYPE_CHECKING:
@@ -33,6 +33,7 @@ def build_rsync_command(
     target_spec: str,
     target_port: int | None,
     excludes: list[str] | tuple[str, ...] = (),
+    dedicated_key: DedicatedKeyOptions | None = None,
 ) -> str:
     """Fixed-flag rsync command with safely quoted arguments (no user flags).
 
@@ -47,8 +48,19 @@ def build_rsync_command(
     treat everything after the first colon as path).
     Exclusion patterns travel as --exclude=arg (full rsync semantics; the
     transfer root itself is never excluded by rsync).
+
+    With ``dedicated_key`` the `-e` ssh options additionally pin the SGC
+    dedicated identity and the app-owned known_hosts file (Phase 4.2C):
+    `-i <key> -o IdentitiesOnly=yes -o UserKnownHostsFile=<known_hosts>`.
+    NEVER any password-based auth, no askpass helpers, never agent forwarding.
     """
     ssh_opts = "ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes"
+    if dedicated_key is not None:
+        ssh_opts += (
+            f" -i {shlex.quote(dedicated_key.private_key_path)}"
+            " -o IdentitiesOnly=yes"
+            f" -o UserKnownHostsFile={shlex.quote(dedicated_key.known_hosts_path)}"
+        )
     if target_port:
         ssh_opts += f" -p {int(target_port)}"
     parts = [
@@ -135,6 +147,7 @@ async def plan_transfer(
     ssh: SshManager,
     excludes: list[str] | None = None,
     probe_timeout_s: float = _DEFAULT_PROBE_TIMEOUT_S,
+    dedicated_key: DedicatedKeyOptions | None = None,
 ) -> TransferPlan:
     """Run the direct-rsync preflight and select the strategy.
 
@@ -142,6 +155,10 @@ async def plan_transfer(
     availability and a reason; strategy selection follows AUTO rules.
     Bounded disk probes (source size, target free) run alongside; a probe
     failure leaves the plan field as None and never blocks planning.
+
+    Direct-auth ladder (Phase 4.2C): rsync on both ends → native BatchMode
+    probe → dedicated-key probe (only when the pair has a configured SGC
+    dedicated key). The winning method lands in ``plan.direct_auth_method``.
     """
 
     plan = TransferPlan(
@@ -170,6 +187,7 @@ async def plan_transfer(
     rsync_target = await _rsync_present(target_executor)
     probe_ok = False
     probe_detail = ""
+    direct_method: str | None = None
     if rsync_source and rsync_target:
         try:
             params = ssh.resolve_params_for(target_server)
@@ -177,6 +195,14 @@ async def plan_transfer(
             probe_ok, probe_detail = await _batch_mode_probe(
                 session, params.host, params.port, params.username
             )
+            if probe_ok:
+                direct_method = "native"
+            elif dedicated_key is not None:
+                probe_ok, probe_detail = await dedicated_batch_mode_probe(
+                    session, params.host, params.port, params.username, dedicated_key
+                )
+                if probe_ok:
+                    direct_method = "sgc_key"
             await session.close()
         except Exception as exc:  # transport failure -> relay
             probe_ok = False
@@ -184,6 +210,9 @@ async def plan_transfer(
 
     direct_available = bool(rsync_source and rsync_target and probe_ok)
     plan.strategy_available = {"direct_rsync": direct_available, "local_relay": True}
+    plan.direct_auth_method = direct_method if direct_available else None
+    if not direct_available:
+        plan.direct_auth_reason = _unavailable_reason_code(rsync_source, rsync_target)
 
     if requested is TransferStrategy.LOCAL_RELAY:
         plan.strategy_selected = TransferStrategy.LOCAL_RELAY
@@ -192,7 +221,7 @@ async def plan_transfer(
     if requested is TransferStrategy.DIRECT_RSYNC:
         if direct_available:
             plan.strategy_selected = TransferStrategy.DIRECT_RSYNC
-            plan.reason = "direct rsync preflight passed"
+            plan.reason = f"direct rsync preflight passed ({direct_method})"
         else:
             plan.strategy_selected = None
             plan.reason = "direct rsync unavailable: " + (
@@ -214,6 +243,16 @@ async def plan_transfer(
             else "direct rsync unavailable; falling back to local relay"
         )
     return plan
+
+
+def _unavailable_reason_code(rsync_source: bool, rsync_target: bool) -> str | None:
+    """Short taxonomy code for the plan preview when direct rsync is off."""
+
+    if not rsync_source:
+        return "rsync_missing_source"
+    if not rsync_target:
+        return "rsync_missing_target"
+    return None
 
 
 async def _rsync_present(executor: ExecutorLike) -> bool:
@@ -313,3 +352,40 @@ def _probe_detail(stderr: str, exit_code: int) -> str:
     collapsed = "; ".join(line.strip() for line in stderr.splitlines() if line.strip())
     detail = collapsed[:_PROBE_DETAIL_MAX_CHARS].strip()
     return detail or f"ssh exited with code {exit_code}"
+
+
+async def dedicated_batch_mode_probe(
+    session: LongCommandSession,
+    host: str,
+    port: int | None,
+    username: str | None,
+    options: DedicatedKeyOptions,
+) -> tuple[bool, str]:
+    """BatchMode probe through the SGC dedicated transfer key (Phase 4.2C).
+
+    Same strictness as the native probe, plus the dedicated identity and the
+    app-owned known_hosts on the source: `-i <key> -o IdentitiesOnly=yes
+    -o UserKnownHostsFile=<sgc-known-hosts>`. Never a password, never agent
+    forwarding, never a weaker host-key mode.
+    """
+
+    user_part = f"{username}@" if username else ""
+    command = (
+        f"ssh -i {shlex.quote(options.private_key_path)}"
+        f" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes"
+        f" -o UserKnownHostsFile={shlex.quote(options.known_hosts_path)}"
+        f" -o ConnectTimeout=8 -p {int(port or 22)}"
+        f" {shlex.quote(f'{user_part}{host}')} true"
+    )
+    stderr_chunks: list[str] = []
+
+    async def _collect_stderr(chunk: str) -> None:
+        stderr_chunks.append(chunk)
+
+    try:
+        exit_code = await session.run(command, timeout_s=20.0, on_stderr=_collect_stderr)
+    except Exception as exc:
+        return False, f"probe error: {str(exc)[:120]}"
+    if exit_code == 0:
+        return True, ""
+    return False, _probe_detail("".join(stderr_chunks), exit_code)

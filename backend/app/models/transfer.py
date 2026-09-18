@@ -13,11 +13,25 @@ for the plan preview UI.
 
 from __future__ import annotations
 
+import dataclasses
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
 _PATH = Field(min_length=1, max_length=512)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class DedicatedKeyOptions:
+    """SOURCE-side ssh options for a dedicated direct-transfer key (4.2C).
+
+    Paths live on the SOURCE server (relative to its home); they travel into
+    the rsync `-e` ssh options and the batch-mode probes only. Never carries
+    secrets: the private key never leaves the source machine.
+    """
+
+    private_key_path: str
+    known_hosts_path: str
 
 
 class TransferStrategy(StrEnum):
@@ -65,6 +79,10 @@ class TransferPlan(BaseModel):
     # space" warning text for the plan preview UI.
     target_free_b: int | None = None
     space_warning: str = ""
+    # Phase 4.2C: how the source can SSH to the target (direct rsync auth
+    # ladder): "native" | "sgc_key", or None when direct rsync is unavailable.
+    direct_auth_method: str | None = None
+    direct_auth_reason: str | None = None
 
 
 class TransferRequest(BaseModel):

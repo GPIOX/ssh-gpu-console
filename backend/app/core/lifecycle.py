@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.direct_auth.metadata import DirectAuthMetadata
+from app.direct_auth.service import DirectAuthService
 from app.runtime import Runtime, get_runtime, set_runtime
 from app.ssh.manager import SshManager
 from app.ssh.transport import build_executor
@@ -46,6 +48,7 @@ class AppContext:
         distribution: DistributionService | None = None,
         sync_planner: SyncPlanner | None = None,
         batches: BatchRegistry | None = None,
+        direct_auth: DirectAuthService | None = None,
     ) -> None:
         self.settings = settings
         self.ssh = ssh
@@ -55,6 +58,7 @@ class AppContext:
         self.distribution = distribution
         self.sync_planner = sync_planner
         self.batches = batches
+        self.direct_auth = direct_auth
 
     async def start(self) -> None:
         await self.telemetry.start()
@@ -76,11 +80,18 @@ class AppContext:
 
 def build_context(settings: Settings) -> AppContext:
     """Construct the production context over the user's real SSH environment."""
+    from app.credentials.store import build_credential_store, set_credential_store
     from app.models.server import ServerRecord
     from app.servers.registry import get_default_registry
     from app.ssh.executor import Executor
 
-    ssh = SshManager(settings)
+    # One credential store for the whole process (OS keyring when secure,
+    # session RAM otherwise). Routes reach it via get_credential_store(); the
+    # connect factory receives the same instance for password lookups.
+    credential_store = build_credential_store()
+    set_credential_store(credential_store)
+
+    ssh = SshManager(settings, credentials=credential_store)
 
     async def executor_factory(server_id: str, record: ServerRecord) -> Executor:
         return build_executor(ssh, record)
@@ -94,7 +105,17 @@ def build_context(settings: Settings) -> AppContext:
 
     from app.transfer.service import TransferService
 
-    transfers = TransferService(settings=settings, ssh=ssh, workspace=workspace)
+    direct_auth = DirectAuthService(
+        settings,
+        ssh,
+        registry_lookup=lambda server_id: get_default_registry().get(server_id),
+        workspace_like_server_lookup=_server_exists,
+        metadata=DirectAuthMetadata(JsonFileStore(settings.data_dir / "direct_auth.json")),
+    )
+
+    transfers = TransferService(
+        settings=settings, ssh=ssh, workspace=workspace, direct_auth=direct_auth
+    )
 
     batches = BatchRegistry()
 
@@ -134,6 +155,7 @@ def build_context(settings: Settings) -> AppContext:
         distribution=distribution,
         sync_planner=sync_planner,
         batches=batches,
+        direct_auth=direct_auth,
     )
 
 
@@ -159,6 +181,7 @@ def install_runtime(context: AppContext) -> Runtime:
         transfers=context.transfers,  # type: ignore[arg-type]
         distribution=context.distribution,  # type: ignore[arg-type]
         batches=context.batches,
+        direct_auth=context.direct_auth,  # type: ignore[arg-type]
     )
     set_runtime(runtime)
     return runtime

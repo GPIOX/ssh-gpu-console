@@ -390,6 +390,128 @@
   max-width: 660px;
 }
 
+/* -- 本机认证 + 直连传输 dialog sections (phase 4.2B/4.2D) ---------------------- */
+
+.settings-dialog__rule {
+  border-top: 1px solid var(--line);
+  margin: 2px 0;
+}
+
+.settings-auth {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.settings-auth__title {
+  margin-bottom: 2px;
+}
+
+.settings-auth__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  min-height: 20px;
+}
+
+.settings-auth__row--password {
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.settings-auth__label {
+  flex: none;
+  width: 92px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.settings-auth__value {
+  color: var(--text-2);
+}
+
+.settings-auth__value--ok {
+  color: var(--text-1);
+}
+
+.settings-auth__bullets {
+  letter-spacing: 2px;
+}
+
+.settings-auth__editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 200px;
+}
+
+.settings-auth__editor .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-direct {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.settings-direct__intro {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.settings-direct__empty {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* -- direct-auth pair row (shared with the transfer setup dialog) --------------- */
+
+.da-pair {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+  min-height: 26px;
+}
+
+.da-pair__name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.da-pair__reason {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.da-pair__spacer {
+  flex: 1;
+}
+
+.da-pair__busy {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.da-pair__ok {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+.da-pair__no {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
 /* -- narrow layout ------------------------------------------------------------------------ */
 
 @media (max-width: 960px) {

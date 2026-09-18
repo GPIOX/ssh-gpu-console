@@ -256,3 +256,27 @@
   flex-wrap: wrap;
   gap: 4px;
 }
+
+/* -- direct-auth upgrade (phase 4.2D): CTA row + setup dialog ------------------- */
+
+.tf-plan__direct {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tf-da-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tf-da-setup__pair {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.tf-da-setup__loading {
+  font-size: 12px;
+  color: var(--text-3);
+}

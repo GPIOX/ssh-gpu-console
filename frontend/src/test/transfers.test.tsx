@@ -388,7 +388,7 @@ describe("NewTransferDialog", () => {
     expect(screen.getByText("checkpoints")).toBeTruthy();
   });
 
-  it("shows per-method availability and the localized no-direct-SSH reason", async () => {
+  it("shows per-method availability and the humanized no-direct reason lead", async () => {
     vi.spyOn(transfersApi, "plan").mockResolvedValue({
       ...planFixture,
       strategy_available: { direct_rsync: false, local_relay: true },
@@ -405,9 +405,11 @@ describe("NewTransferDialog", () => {
     await waitFor(() => {
       expect(screen.getAllByText("unavailable").length).toBeGreaterThan(0);
     });
+    // Humanized lead line; the raw planner reason stays as secondary detail.
     expect(
-      screen.getByText("Source server cannot SSH to the target directly"),
+      screen.getByText("Reason: the source server cannot authenticate to the target server"),
     ).toBeTruthy();
+    expect(screen.getByText("direct rsync unavailable; falling back to local relay")).toBeTruthy();
   });
 });
 

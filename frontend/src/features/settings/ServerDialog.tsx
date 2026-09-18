@@ -8,6 +8,13 @@
  * host key opens the TOFU security panel — trust only ever happens on an explicit
  * click, never automatically. All user-visible copy is dictionary-driven (useT/tf);
  * raw API error strings stay as machine diagnostics.
+ *
+ * Phase 4.2B/4.2D: below the basic fields, two compact sections —
+ * 本机认证 (zero-SSH auth facts + the password credential flow) and
+ * 直连传输 (one row per pair whose TARGET is this server, from the zero-SSH
+ * pairs listing; every remote action is an explicit click, revoke is
+ * confirmed). Password state lives in React state only — never in storage;
+ * the input starts and stays empty until the user types.
  */
 
 import { useEffect, useState } from "react";
@@ -28,12 +35,16 @@ import { useConsoleStore } from "../../store/consoleStore";
 import type {
   AliasEntry,
   ConnectionTestResult,
+  DirectAuthPair,
+  DirectAuthPeer,
+  ServerAuthStatus,
   ServerCreate,
   ServerPatch,
   ServerRecord,
   ServerStatus,
 } from "../../types/models";
 import { cx } from "../../utils/cx";
+import { DirectAuthPairRow, type DirectAuthAction } from "./DirectAuthPairRow";
 import "./settings.css";
 
 type SshSource = "alias" | "manual";
@@ -139,6 +150,361 @@ export interface ServerDialogProps {
   server: ServerRecord | null;
 }
 
+// ---------------------------------------------------------------------------
+// 本机认证 — zero-SSH facts + the password credential flow (explicit only)
+// ---------------------------------------------------------------------------
+
+type PasswordUIState =
+  | { phase: "idle"; editing: false }
+  | { phase: "idle"; editing: true }
+  | { phase: "saving" }
+  | { phase: "clearing" };
+
+/** One small fact row: label left, quiet value right. */
+function AuthRow({ label, value, tone }: { label: string; value: string; tone?: "ok" | "muted" }) {
+  return (
+    <div className="settings-auth__row">
+      <span className="settings-auth__label">{label}</span>
+      <span className={cx("settings-auth__value", tone === "ok" && "settings-auth__value--ok")}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function LocalAuthSection({
+  serverId,
+  auth,
+  authError,
+  onReloadAuth,
+}: {
+  serverId: string;
+  auth: ServerAuthStatus | null;
+  authError: string | null;
+  onReloadAuth: () => void;
+}) {
+  const t = useT();
+  const [editing, setEditing] = useState(false);
+  const [password, setPassword] = useState("");
+  const [ui, setUi] = useState<PasswordUIState>({ phase: "idle", editing: false });
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [confirmingClear, setConfirmingClear] = useState(false);
+
+  // Unmount (or target change) drops every password trace instantly.
+  useEffect(() => {
+    return () => {
+      setPassword("");
+      setEditing(false);
+      setUi({ phase: "idle", editing: false });
+      setActionError(null);
+      setConfirmingClear(false);
+    };
+  }, [serverId]);
+
+  const configured = auth?.password_configured === true;
+  const busy = ui.phase === "saving" || ui.phase === "clearing";
+
+  const save = async (): Promise<void> => {
+    if (password === "") return;
+    setUi({ phase: "saving" });
+    setActionError(null);
+    try {
+      await api.setPassword(serverId, password);
+      setPassword(""); // the secret never lingers in the DOM or state
+      setEditing(false);
+      setUi({ phase: "idle", editing: false });
+      onReloadAuth();
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "request failed");
+      setUi({ phase: "idle", editing: true });
+    }
+  };
+
+  const clear = async (): Promise<void> => {
+    setUi({ phase: "clearing" });
+    setActionError(null);
+    try {
+      await api.deletePassword(serverId);
+      setConfirmingClear(false);
+      setUi({ phase: "idle", editing: false });
+      onReloadAuth();
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "request failed");
+      setUi({ phase: "idle", editing: false });
+    }
+  };
+
+  return (
+    <div className="settings-auth" data-testid="local-auth-section">
+      <p className="settings-auth__title micro-label">{t.serverAuth.localAuth}</p>
+      {authError !== null ? (
+        <ErrorPanel
+          title={t.serverAuth.passwordLoadFailed}
+          detail={authError}
+          onRetry={onReloadAuth}
+          retryLabel={t.common.retry}
+        />
+      ) : auth === null ? (
+        <Skeleton height={72} radius="7px" />
+      ) : (
+        <>
+          <AuthRow
+            label={t.serverAuth.sshConfig}
+            value={auth.ssh_config_used ? t.serverAuth.sshConfigMatched : t.serverAuth.sshConfigNotMatched}
+            tone={auth.ssh_config_used ? "ok" : undefined}
+          />
+          <AuthRow
+            label={t.serverAuth.identity}
+            value={
+              auth.identity_files > 0
+                ? tf(t.serverAuth.identityConfigured, { n: auth.identity_files })
+                : t.serverAuth.identityNone
+            }
+            tone={auth.identity_files > 0 ? "ok" : undefined}
+          />
+          <AuthRow
+            label={t.serverAuth.agent}
+            value={auth.agent_available ? t.serverAuth.agentAvailable : t.serverAuth.agentUnavailable}
+            tone={auth.agent_available ? "ok" : undefined}
+          />
+          <AuthRow
+            label={t.serverAuth.proxyJump}
+            value={auth.proxy_jump_configured ? t.serverAuth.proxyJumpOn : t.serverAuth.proxyJumpOff}
+          />
+          <div className="settings-auth__row settings-auth__row--password" data-testid="password-row">
+            <span className="settings-auth__label">{t.serverAuth.password}</span>
+            {!configured && !editing && (
+              <>
+                <span className="settings-auth__value">{t.serverAuth.passwordUnset}</span>
+                <span className="da-pair__spacer" />
+                <Button
+                  disabled={busy}
+                  onClick={() => {
+                    setPassword("");
+                    setEditing(true);
+                  }}
+                >
+                  {t.serverAuth.setPassword}
+                </Button>
+              </>
+            )}
+            {configured && !editing && (
+              <>
+                <span className="settings-auth__value settings-auth__bullets mono">••••••••</span>
+                <span className="settings-auth__value settings-auth__value--ok">
+                  {t.serverAuth.passwordSet}
+                </span>
+                <span className="settings-auth__value">
+                  {auth.password_storage === "session_only"
+                    ? t.serverAuth.storageSession
+                    : auth.password_storage === "system_keyring"
+                      ? t.serverAuth.storageKeyring
+                      : ""}
+                </span>
+                <span className="da-pair__spacer" />
+                <Button
+                  disabled={busy}
+                  onClick={() => {
+                    setPassword("");
+                    setEditing(true);
+                  }}
+                >
+                  {t.serverAuth.replacePassword}
+                </Button>
+                {confirmingClear ? (
+                  <>
+                    <Button variant="primary" disabled={busy} onClick={() => void clear()}>
+                      {t.serverAuth.clearPasswordConfirm}
+                    </Button>
+                    <Button disabled={busy} onClick={() => setConfirmingClear(false)}>
+                      {t.common.cancel}
+                    </Button>
+                  </>
+                ) : (
+                  <Button disabled={busy} onClick={() => setConfirmingClear(true)}>
+                    {t.serverAuth.clearPassword}
+                  </Button>
+                )}
+              </>
+            )}
+            {editing && (
+              <span className="settings-auth__editor">
+                <TextInput
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={t.serverAuth.passwordPlaceholder}
+                  aria-label={t.serverAuth.password}
+                  value={password}
+                  disabled={busy}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+                <Button
+                  variant="primary"
+                  disabled={busy || password === ""}
+                  onClick={() => void save()}
+                >
+                  {ui.phase === "saving" ? t.serverAuth.passwordSaving : t.serverAuth.passwordSave}
+                </Button>
+                <Button
+                  disabled={busy}
+                  onClick={() => {
+                    setPassword("");
+                    setEditing(false);
+                  }}
+                >
+                  {t.common.cancel}
+                </Button>
+              </span>
+            )}
+          </div>
+          {actionError !== null && (
+            <p className="field__error">
+              {configured ? t.serverAuth.passwordClearFailed : t.serverAuth.passwordSaveFailed}:{" "}
+              {actionError}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 直连传输 — other (enabled) servers → this server; explicit checks only.
+// The zero-SSH pairs listing covers BOTH directions involving this server, so
+// only pairs whose TARGET is this server seed the rows: a pair (thisServer →
+// other) belongs to the other server's own dialog, never to this section.
+// ---------------------------------------------------------------------------
+
+function DirectTransferSection({ targetId }: { targetId: string }) {
+  const t = useT();
+  const servers = useConsoleStore((state) => state.servers);
+  const [pairs, setPairs] = useState<DirectAuthPair[] | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const sources = servers.filter((s) => s.enabled && s.server_id !== targetId);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPairs(null);
+    setListError(null);
+    api
+      .getDirectAuth(targetId)
+      .then((list) => {
+        if (!cancelled) setPairs(list.pairs);
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setListError(cause instanceof Error ? cause.message : "request failed");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [targetId]);
+
+  const runAction = async (
+    sourceId: string,
+    action: DirectAuthAction,
+  ): Promise<DirectAuthPeer> => {
+    const fresh =
+      action === "check"
+        ? await api.checkDirectAuth(sourceId, targetId)
+        : action === "setup"
+          ? await api.setupDirectKey(sourceId, targetId)
+          : await (async () => {
+              await api.revokeDirectAuth(sourceId, targetId);
+              // After revoke the pair is back to "not configured, never checked".
+              return {
+                target_server_id: targetId,
+                configured: false,
+                method: null,
+                available: null,
+                reason: null,
+                checked_at: null,
+              } satisfies DirectAuthPeer;
+            })();
+    if (action !== "revoke") {
+      // Refresh the section's cached pair metadata with the fresh peer.
+      setPairs((current) =>
+        (current ?? []).map((pair) =>
+          pair.source_server_id === sourceId && pair.target_server_id === targetId
+            ? { ...pair, ...fresh }
+            : pair,
+        ),
+      );
+    } else {
+      setPairs((current) =>
+        (current ?? []).map((pair) =>
+          pair.source_server_id === sourceId && pair.target_server_id === targetId
+            ? {
+                ...pair,
+                configured: false,
+                method: null,
+                available: null,
+                reason: null,
+                checked_at: null,
+              }
+            : pair,
+        ),
+      );
+    }
+    return fresh;
+  };
+
+  // Only incoming pairs (this server is the TARGET) back rows in this section.
+  const incomingPairs = (pairs ?? []).filter((pair) => pair.target_server_id === targetId);
+
+  return (
+    <div className="settings-direct" data-testid="direct-section">
+      <p className="settings-auth__title micro-label">{t.serverAuth.directTransfer}</p>
+      <p className="settings-direct__intro">{t.serverAuth.directIntro}</p>
+      {listError !== null ? (
+        <ErrorPanel
+          title={t.serverAuth.directListFailed}
+          detail={listError}
+          onRetry={() => {
+            setListError(null);
+            api
+              .getDirectAuth(targetId)
+              .then((list) => setPairs(list.pairs))
+              .catch((cause) =>
+                setListError(cause instanceof Error ? cause.message : "request failed"),
+              );
+          }}
+          retryLabel={t.common.retry}
+        />
+      ) : pairs === null ? (
+        <Skeleton height={40} radius="7px" />
+      ) : sources.length === 0 ? (
+        <p className="settings-direct__empty">{t.serverAuth.noSources}</p>
+      ) : (
+        sources.map((source) => {
+          const pair =
+            incomingPairs.find((candidate) => candidate.source_server_id === source.server_id) ?? {
+              source_server_id: source.server_id,
+              target_server_id: targetId,
+              configured: false,
+              method: null,
+              available: null,
+              reason: null,
+              checked_at: null,
+            };
+          return (
+            <DirectAuthPairRow
+              key={source.server_id}
+              sourceId={source.server_id}
+              sourceName={source.display_name}
+              targetId={targetId}
+              peer={pair}
+              onAction={(action) => runAction(source.server_id, action)}
+            />
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 export function ServerDialog({ open, onClose, server }: ServerDialogProps) {
   const t = useT();
   const editing = server !== null;
@@ -155,10 +521,29 @@ export function ServerDialog({ open, onClose, server }: ServerDialogProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [trusting, setTrusting] = useState(false);
+  // Phase 4.2B: zero-SSH auth facts, fetched when the dialog opens for a server.
+  const [auth, setAuth] = useState<ServerAuthStatus | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const loadAuth = (serverId: string) => {
+    setAuth(null);
+    setAuthError(null);
+    api
+      .getServerAuth(serverId)
+      .then((status) => setAuth(status))
+      .catch((cause) =>
+        setAuthError(cause instanceof Error ? cause.message : "request failed"),
+      );
+  };
 
   // Re-seed the whole dialog on every open; aliases are re-read fresh.
+  // Closing drops every password trace: state is reset before the early return.
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setAuth(null);
+      setAuthError(null);
+      return;
+    }
     setForm(server === null ? EMPTY_FORM : formFromServer(server));
     setActiveId(server?.server_id ?? null);
     setStep("form");
@@ -170,6 +555,7 @@ export function ServerDialog({ open, onClose, server }: ServerDialogProps) {
     setTrusting(false);
     setAliases(null);
     setAliasesError(null);
+    if (server !== null) loadAuth(server.server_id);
     let cancelled = false;
     api
       .listSshAliases()
@@ -515,6 +901,20 @@ export function ServerDialog({ open, onClose, server }: ServerDialogProps) {
               <span className="settings-switch__thumb" />
             </button>
           </Field>
+
+          {editing && server !== null && (
+            <>
+              <div className="settings-dialog__rule" role="presentation" />
+              <LocalAuthSection
+                serverId={server.server_id}
+                auth={auth}
+                authError={authError}
+                onReloadAuth={() => loadAuth(server.server_id)}
+              />
+              <div className="settings-dialog__rule" role="presentation" />
+              <DirectTransferSection targetId={server.server_id} />
+            </>
+          )}
 
           {submitError !== null && <p className="field__error">{submitError}</p>}
 
