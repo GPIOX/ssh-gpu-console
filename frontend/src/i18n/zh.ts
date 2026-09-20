@@ -348,6 +348,8 @@ export const zh: Dict = {
     directUnavailable: "不可用",
     directNativeReady: "✓ 已可直接认证，无需配置",
     directKeyReady: "✓ 专用密钥已就绪",
+    directVerified: "✓ 已直连，可直连传输",
+    directCheckFailed: "✗ 直连检查未通过",
     directCannotAuth: "无法直接认证",
     checkFailed: "检查失败",
     directListFailed: "无法加载直连传输状态",

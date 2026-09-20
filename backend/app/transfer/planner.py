@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 
 _RSYNC_CHECK = "command -v rsync"
 _PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)%")
+# Line-start progress2 payload: comma-grouped byte counter FIRST, then percent.
+_PROGRESS_BYTES_RE = re.compile(r"^\s*([\d,]+)\s+(\d+(?:\.\d+)?)%")
 _DEFAULT_PROBE_TIMEOUT_S = 15.0
 _PROBE_DETAIL_MAX_CHARS = 160
 
@@ -117,16 +119,29 @@ def target_rsync_spec(*, host: str, username: str | None, target_path: str) -> s
     return shlex.quote(spec)
 
 
+# rsync's percentage is computed against a MOVING total estimate (incremental
+# recursion over large trees): the estimate starts small and grows, so the
+# percent may overshoot to a 100%-clamped spike and later recalculate downward
+# — the progress sawtooth. The leading raw byte counter of each progress2 line
+# is monotonic, so it is authoritative; percent * bytes_total is only a
+# fallback for rsync variants that do not emit the leading counter.
 def parse_progress2(chunk: str, job: TransferJob) -> None:
     """Update a job from rsync --info=progress2 output lines."""
     for line in chunk.splitlines():
-        match = _PROGRESS_RE.search(line)
-        if match is None:
-            continue
-        percent = float(match.group(1))
-        total = getattr(job, "bytes_total", None)
-        if isinstance(total, int) and total > 0:
-            job.bytes_done = int(total * percent / 100)
+        bytes_match = _PROGRESS_BYTES_RE.match(line)
+        if bytes_match is not None:
+            bytes_value = int(bytes_match.group(1).replace(",", ""))
+            # Monotonic within the run: a stale/regressed line must never
+            # move the bar backwards.
+            job.bytes_done = max(job.bytes_done, bytes_value)
+        else:
+            match = _PROGRESS_RE.search(line)
+            if match is None:
+                continue
+            percent = float(match.group(1))
+            total = getattr(job, "bytes_total", None)
+            if isinstance(total, int) and total > 0:
+                job.bytes_done = int(total * percent / 100)
         speed = re.search(r"(\d+(?:\.\d+)?[kMGT]?)B/s", line)
         if speed is not None:
             job.rate_bps = parse_bps(speed.group(1))

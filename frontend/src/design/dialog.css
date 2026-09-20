@@ -6,6 +6,7 @@
   place-items: center;
   z-index: 50;
   padding: 24px;
+  overflow-y: auto;
 }
 
 .dialog {
@@ -17,6 +18,10 @@
   box-shadow: var(--shadow-pop);
   animation: dialog-in 120ms ease;
   min-width: 0;
+  /* Matches the overlay's 24px vertical padding so the panel always fits the viewport. */
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
 }
 
 @keyframes dialog-in {
@@ -32,6 +37,7 @@
 
 .dialog__head {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -48,4 +54,7 @@
 
 .dialog__body {
   min-width: 0;
+  overflow-y: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
 }

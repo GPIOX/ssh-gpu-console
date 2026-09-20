@@ -352,6 +352,8 @@ export const en = {
     directUnavailable: "unavailable",
     directNativeReady: "✓ Ready for direct authentication — no setup needed",
     directKeyReady: "✓ Dedicated key in place",
+    directVerified: "✓ Direct connection verified",
+    directCheckFailed: "✗ Direct check failed",
     directCannotAuth: "Cannot authenticate directly",
     checkFailed: "Check failed",
     directListFailed: "Could not load direct-transfer status",

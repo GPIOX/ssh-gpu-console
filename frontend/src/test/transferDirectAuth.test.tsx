@@ -244,7 +244,7 @@ describe("setup dialog pair seeding (pairs shape)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Configure direct" }));
 
-    expect(await screen.findByText("✓ Dedicated key in place")).toBeTruthy();
+    expect(await screen.findByText("✓ Direct connection verified")).toBeTruthy();
     expect(api.getDirectAuth).toHaveBeenCalledWith("srv-src");
     expect(api.getDirectAuth).toHaveBeenCalledTimes(1); // exact hit — no fallback
   });
@@ -271,7 +271,7 @@ describe("setup dialog pair seeding (pairs shape)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Configure direct" }));
 
-    expect(await screen.findByText("✓ Dedicated key in place")).toBeTruthy();
+    expect(await screen.findByText("✓ Direct connection verified")).toBeTruthy();
     expect(api.getDirectAuth).toHaveBeenCalledWith("srv-src");
     expect(api.getDirectAuth).toHaveBeenCalledWith("srv-dst");
   });

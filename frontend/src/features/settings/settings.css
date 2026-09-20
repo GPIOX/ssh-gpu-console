@@ -503,13 +503,19 @@
 .da-pair__ok {
   flex-basis: 100%;
   font-size: 12px;
+  color: var(--healthy);
+}
+
+.da-pair__ready {
+  flex-basis: 100%;
+  font-size: 12px;
   color: var(--text-1);
 }
 
 .da-pair__no {
   flex-basis: 100%;
   font-size: 12px;
-  color: var(--text-2);
+  color: var(--danger);
 }
 
 /* -- narrow layout ------------------------------------------------------------------------ */

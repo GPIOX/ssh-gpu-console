@@ -122,11 +122,16 @@ export function DirectAuthPairRow({
   } else {
     statusWord = t.serverAuth.directNotConfigured;
   }
+  // A configured key whose latest explicit probe failed is dead — the chip
+  // must say crit regardless of the configured method.
+  if (checked && current.available === false) {
+    tone = "crit";
+  }
 
-  // Outcome banner after an explicit check / setup.
+  // Outcome banner after an explicit check / setup: shows the LATEST explicit
+  // check outcome; config-only readiness ("已就绪") only until the first check.
   const nativeReady =
     !current.configured && current.method === "native" && current.available === true;
-  const keyReady = current.configured && current.method === "sgc_key";
   const cannotAuth = !current.configured && checked && current.available === false;
 
   return (
@@ -189,10 +194,18 @@ export function DirectAuthPairRow({
               : t.serverAuth.revoking}
         </span>
       )}
+      {checked && current.available === false && current.configured && (
+        <p className="da-pair__no">{t.serverAuth.directCheckFailed}</p>
+      )}
+      {checked && current.available === true && (current.configured || current.method === "native") && (
+        <p className="da-pair__ok">{t.serverAuth.directVerified}</p>
+      )}
+      {current.configured && current.method === "sgc_key" && !checked && (
+        <p className="da-pair__ready">{t.serverAuth.directKeyReady}</p>
+      )}
       {nativeReady && (
         <p className="da-pair__ok">{t.serverAuth.directNativeReady}</p>
       )}
-      {keyReady && <p className="da-pair__ok">{t.serverAuth.directKeyReady}</p>}
       {cannotAuth && !nativeReady && (
         <p className="da-pair__no">{t.serverAuth.directCannotAuth}</p>
       )}

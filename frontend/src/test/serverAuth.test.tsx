@@ -262,7 +262,9 @@ describe("DirectAuthPairRow (explicit actions only)", () => {
     await waitFor(() => {
       expect(setupSpy).toHaveBeenCalledWith("src-1", "tgt-1");
     });
-    expect(await screen.findByText("✓ Dedicated key in place")).toBeTruthy();
+    // A successful setup runs a real probe — the banner shows the verified
+    // outcome, not the config-only "ready" wording.
+    expect(await screen.findByText("✓ Direct connection verified")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Re-check" })).toBeTruthy();
   });
 
@@ -275,7 +277,7 @@ describe("DirectAuthPairRow (explicit actions only)", () => {
       />,
     );
 
-    expect(await screen.findByText("✓ Dedicated key in place")).toBeTruthy();
+    expect(await screen.findByText("✓ Direct connection verified")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
 
     // Explicit confirm — no DELETE on the first click.
@@ -318,6 +320,58 @@ describe("DirectAuthPairRow (explicit actions only)", () => {
   });
 });
 
+describe("DirectAuthPairRow banner decision table (configured sgc_key)", () => {
+  it("not yet checked: shows the ready wording, not the verified outcome", () => {
+    render(
+      <DirectAuthPairRow
+        {...pairRowProps(peerFixture({ configured: true, method: "sgc_key" }))}
+        onAction={apiBackedOnAction()}
+      />,
+    );
+
+    expect(screen.getByText("✓ Dedicated key in place")).toBeTruthy();
+    expect(screen.queryByText("✓ Direct connection verified")).toBeNull();
+    expect(screen.queryByText("✗ Direct check failed")).toBeNull();
+  });
+
+  it("check succeeded: shows the verified outcome instead of the ready wording", () => {
+    render(
+      <DirectAuthPairRow
+        {...pairRowProps(
+          peerFixture({ configured: true, method: "sgc_key", available: true, checked_at: "2026-09-18T00:00:00Z" }),
+        )}
+        onAction={apiBackedOnAction()}
+      />,
+    );
+
+    expect(screen.getByText("✓ Direct connection verified")).toBeTruthy();
+    expect(screen.queryByText("✓ Dedicated key in place")).toBeNull();
+  });
+
+  it("check failed: crit chip + failed banner + humanized reason", () => {
+    render(
+      <DirectAuthPairRow
+        {...pairRowProps(
+          peerFixture({
+            configured: true,
+            method: "sgc_key",
+            available: false,
+            reason: "authentication_failed",
+            checked_at: "2026-09-18T00:00:00Z",
+          }),
+        )}
+        onAction={apiBackedOnAction()}
+      />,
+    );
+
+    expect(screen.getByText("✗ Direct check failed")).toBeTruthy();
+    expect(screen.getByText("authentication failed")).toBeTruthy(); // humanized reason
+    const chip = screen.getByText("dedicated key");
+    expect(chip.className).toContain("chip--crit");
+    expect(screen.queryByText("✓ Dedicated key in place")).toBeNull();
+  });
+});
+
 describe("ServerDialog 直连传输 section (pairs shape)", () => {
   const PEER_SERVER = makeServer({ server_id: "srv-peer", display_name: "Peer Node" });
 
@@ -348,7 +402,7 @@ describe("ServerDialog 直连传输 section (pairs shape)", () => {
     expect(pairEl?.getAttribute("data-source")).toBe("srv-peer");
     expect(pairEl?.getAttribute("data-target")).toBe("srv-auth");
     // Seeded from the INCOMING pair (dedicated key), not the outgoing pair.
-    expect(await screen.findByText("✓ Dedicated key in place")).toBeTruthy();
+    expect(await screen.findByText("✓ Direct connection verified")).toBeTruthy();
     expect(document.querySelectorAll(".da-pair")).toHaveLength(1);
 
     // Explicit re-check targets the exact incoming pair endpoints.

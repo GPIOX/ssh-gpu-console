@@ -287,6 +287,10 @@ class TransferService:
         if not ok:
             self._jobs.fail(job, "verify_failed", reason[:300])
             return
+        # rsync's final progress line stops short of 100% during the trailing
+        # check phase; a completed job always reports the full bar.
+        if job.bytes_total is not None:
+            job.bytes_done = job.bytes_total
         self._jobs.transition(job, TransferState.COMPLETED)
         self._record_target_placement(job)
 
