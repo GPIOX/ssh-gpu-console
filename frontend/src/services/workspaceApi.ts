@@ -32,6 +32,7 @@ import type {
   ProjectSyncPlan,
   ServerRoots,
   ServerRootsUpdate,
+  SuggestTargetPath,
   SyncAction,
   SyncPlanRequest,
 } from "../types/workspace";
@@ -404,6 +405,21 @@ export const workspaceApi = {
 
   async deleteArtifact(artifactId: string): Promise<void> {
     await request(`/workspace/artifacts/${enc(artifactId)}`, "DELETE");
+  },
+
+  /** Canonical target-path suggestion (backend safe_artifact_leaf naming, the
+   *  same one Project Sync uses); a null path carries a reason. Unknown
+   *  artifact/server surfaces as an ApiError with the backend status. */
+  async suggestTargetPath(artifactId: string, serverId: string): Promise<SuggestTargetPath> {
+    const raw = await request(
+      `/workspace/artifacts/${enc(artifactId)}/suggest-target-path?server_id=${enc(serverId)}`,
+      "GET",
+    );
+    if (!isRecord(raw)) throw invalidPayload("target path suggestion");
+    return {
+      target_path: optionalStr(raw.target_path),
+      reason: optionalStr(raw.reason),
+    };
   },
 
   async listPlacements(): Promise<PlacementRecord[]> {

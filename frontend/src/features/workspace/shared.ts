@@ -28,6 +28,25 @@ export function kindSectionTitle(t: Dict, kind: ArtifactKind): string {
   return kind === "model" ? t.workspace.tabModels : t.workspace.tabDatasets;
 }
 
+/**
+ * Kind sections in the pinned order code → dataset → model, each keeping the
+ * input artifact order (filter, never sort); empty kinds are omitted.
+ */
+export function groupArtifactsByKind(
+  artifacts: ArtifactRecord[],
+): Array<{ kind: ArtifactKind; artifacts: ArtifactRecord[] }> {
+  const byKind = new Map<ArtifactKind, ArtifactRecord[]>();
+  for (const artifact of artifacts) {
+    const list = byKind.get(artifact.kind) ?? [];
+    list.push(artifact);
+    byKind.set(artifact.kind, list);
+  }
+  const kinds: ArtifactKind[] = ["code", "dataset", "model"];
+  return kinds
+    .filter((kind) => (byKind.get(kind)?.length ?? 0) > 0)
+    .map((kind) => ({ kind, artifacts: byKind.get(kind) ?? [] }));
+}
+
 /** ServerRoots bound: 1–512 characters, no control characters. */
 export function rootPathValid(raw: string): boolean {
   if (raw === "" || raw.length > 512) return false;

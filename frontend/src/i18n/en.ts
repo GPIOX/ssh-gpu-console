@@ -407,9 +407,11 @@ export const en = {
     distribution: "Distribution",
     distributionHint:
       "Declared placements per server · ✓ verified · ○ declared · — missing · ! unavailable · ↻ syncing",
-    matrixPresent: "present",
+    matrixPresent: "verified",
     matrixMissing: "missing",
-    matrixUndeclared: "undeclared",
+    matrixUndeclared: "not placed",
+    matrixGroupCount: "{label} · {n}",
+    placementCount: "{n} placements",
     matrixArtifact: "Artifact",
     matrixEmpty: "No artifacts referenced yet.",
     inspectAll: "Check resources",
@@ -581,6 +583,8 @@ export const en = {
     targetFree: "Target free: {size}",
     noPlacements: "This artifact has no placements",
     noServers: "No servers registered",
+    targetPathNoRoot:
+      "No root configured for this kind on that server — enter a target path manually",
     batchDone: "{done}/{total} completed",
     batchRunningCount: "{n} running",
     batchFailedCount: "{n} failed",

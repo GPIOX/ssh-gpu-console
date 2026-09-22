@@ -7,10 +7,11 @@
  * come from the reason taxonomy; unknown codes fall back to the raw string.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Chip } from "../../design";
 import { useT } from "../../i18n";
 import type { DirectAuthPeer } from "../../types/models";
+import { reasonText, setupReasonAllowed } from "./directAuthUi";
 
 export type DirectAuthAction = "check" | "setup" | "revoke";
 
@@ -26,40 +27,6 @@ export interface DirectAuthPairRowProps {
   onError?: (message: string | null) => void;
 }
 
-/** Human words for a taxonomy code; unknown codes render verbatim. */
-export function reasonText(
-  t: ReturnType<typeof useT>,
-  reason: string | null,
-): string | null {
-  if (reason === null || reason === "") return null;
-  switch (reason) {
-    case "route_unreachable":
-      return t.serverAuth.reasonRouteUnreachable;
-    case "host_key_unknown":
-      return t.serverAuth.reasonHostKeyUnknown;
-    case "host_key_mismatch":
-      return t.serverAuth.reasonHostKeyMismatch;
-    case "authentication_failed":
-      return t.serverAuth.reasonAuthenticationFailed;
-    case "rsync_missing_source":
-      return t.serverAuth.reasonRsyncMissingSource;
-    case "rsync_missing_target":
-      return t.serverAuth.reasonRsyncMissingTarget;
-    case "dedicated_key_missing":
-      return t.serverAuth.reasonDedicatedKeyMissing;
-    case "authorized_key_missing":
-      return t.serverAuth.reasonAuthorizedKeyMissing;
-    case "remote_key_invalid":
-      return t.serverAuth.reasonRemoteKeyInvalid;
-    case "source_known_hosts_missing":
-      return t.serverAuth.reasonSourceKnownHostsMissing;
-    case "keygen_missing_source":
-      return t.serverAuth.reasonKeygenMissingSource;
-    default:
-      return reason;
-  }
-}
-
 export function DirectAuthPairRow({
   sourceId,
   sourceName,
@@ -73,17 +40,28 @@ export function DirectAuthPairRow({
   const [busy, setBusy] = useState<DirectAuthAction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmingRevoke, setConfirmingRevoke] = useState(false);
-  // Keyed re-seed: a new source/target (or fresh upstream metadata) resets the
-  // local view without re-running anything.
-  const [seed, setSeed] = useState(`${sourceId}>${targetId}`);
-  const nextSeed = `${sourceId}>${targetId}`;
-  if (seed !== nextSeed) {
-    setSeed(nextSeed);
+  // Parent-refresh sync (local optimistic state): with no action in flight
+  // the incoming peer is the source of truth — fresh upstream metadata for
+  // the SAME pair converges here (the assignment is idempotent), and a pair
+  // switch also drops the two-step revoke confirm. While an action is in
+  // flight the sync must skip: the action's own result lands via run() and
+  // a parent refresh must not clobber it.
+  const lastPair = useRef(`${sourceId}>${targetId}`);
+  useEffect(() => {
+    if (busy !== null) return;
     setCurrent(peer);
     setError(null);
-    setBusy(null);
-    setConfirmingRevoke(false);
-  }
+    const pair = `${sourceId}>${targetId}`;
+    if (lastPair.current !== pair) {
+      lastPair.current = pair;
+      setConfirmingRevoke(false);
+    }
+    // busy is deliberately read without being a dep: busy transitions must
+    // not re-trigger a sync (that would revert a finished action to the
+    // not-yet-refreshed prop), and the render firing this effect already
+    // carries the current busy value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peer, sourceId, targetId]);
 
   const run = async (action: DirectAuthAction): Promise<void> => {
     setBusy(action);
@@ -133,6 +111,9 @@ export function DirectAuthPairRow({
   const nativeReady =
     !current.configured && current.method === "native" && current.available === true;
   const cannotAuth = !current.configured && checked && current.available === false;
+  // The setup CTA is only for failures a dedicated-key setup can fix;
+  // route/rsync-class failures never invite key setup.
+  const setupAllowed = cannotAuth && setupReasonAllowed(current.reason);
 
   return (
     <div className="da-pair" data-source={sourceId} data-target={targetId}>
@@ -150,7 +131,7 @@ export function DirectAuthPairRow({
           {t.serverAuth.checkDirect}
         </Button>
       )}
-      {busy === null && !confirmingRevoke && !current.configured && cannotAuth && (
+      {busy === null && !confirmingRevoke && setupAllowed && (
         <Button
           disabled={busy !== null}
           onClick={() => void run("setup")}

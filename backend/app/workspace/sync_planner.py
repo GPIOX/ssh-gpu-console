@@ -31,9 +31,14 @@ from app.models.workspace import (
     ArtifactRecord,
     InspectionState,
     PlacementRecord,
-    ServerRoots,
 )
-from app.workspace.paths import normalize_remote_path, paths_overlap, safe_artifact_leaf
+from app.workspace.paths import (
+    claim_path,
+    normalize_remote_path,
+    paths_overlap,
+    root_for_kind,
+    safe_artifact_leaf,
+)
 from app.workspace.repository import utc_now
 from app.workspace.service import WorkspaceService
 
@@ -207,7 +212,7 @@ class SyncPlanner:
                 if placement.artifact_id != artifact.artifact_id
             }
             taken.update(suggested)
-            target_path = _claim_suggestion(base, artifact.artifact_id, taken)
+            target_path = claim_path(base, artifact.artifact_id, taken)
             if target_path is None:
                 return _item(
                     artifact,
@@ -361,29 +366,11 @@ class SyncPlanner:
             roots = self._workspace.server_roots(server_id)
         except NotFoundError:
             return None
-        root = _root_for(roots, artifact.kind) if roots is not None else None
+        root = root_for_kind(roots, artifact.kind) if roots is not None else None
         if not root:
             return None
         leaf = safe_artifact_leaf(artifact.name, artifact.version, artifact.artifact_id)
         return normalize_remote_path(f"{root.rstrip('/')}/{leaf}")
-
-
-def _claim_suggestion(base: str, artifact_id: str, taken: set[str]) -> str | None:
-    """Claim a non-colliding automatic target path; None when exhausted.
-
-    Escalates exactly like :func:`app.workspace.paths.dedupe_leaves`: the base
-    leaf keeps its path when free, otherwise "--" plus a prefix of the
-    artifact id (6, 8, 12 characters, then the full id) is appended. The
-    caller records the claimed path in the plan-scoped registry; repeated
-    calls with the same inputs return the same path (no ``hash()``).
-    """
-    if base not in taken:
-        return base
-    for width in (6, 8, 12, len(artifact_id)):
-        candidate = f"{base}--{artifact_id[:width]}"
-        if candidate not in taken:
-            return candidate
-    return None
 
 
 def _needs_transfer(kind: ArtifactKind, present: bool, refresh_code: bool) -> bool:
@@ -400,16 +387,6 @@ def _motive(kind: ArtifactKind, present: bool, refresh_code: bool, declared: boo
     if not declared:
         return "no placement declared on the target server"
     return "target path checked missing"
-
-
-def _root_for(roots: ServerRoots, kind: ArtifactKind) -> str | None:
-    if kind is ArtifactKind.CODE:
-        return roots.project_root
-    if kind is ArtifactKind.DATASET:
-        return roots.dataset_root
-    if kind is ArtifactKind.MODEL:
-        return roots.model_root
-    return None
 
 
 def _item(

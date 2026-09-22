@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 from app.core.errors import ConflictError, NotFoundError
 from app.core.logging import get_logger
 from app.direct_auth.metadata import DirectAuthMetadata
+from app.direct_auth.reasons import _classify_probe_failure
 from app.models.direct_auth import (
     DirectAuthList,
     DirectAuthMethod,
@@ -123,37 +124,6 @@ def _line_comment(line: bytes) -> str | None:
 def _line_blob(line: bytes) -> str | None:
     fields = _line_fields(line)
     return fields[-2] if fields and len(fields) >= 3 else None
-
-
-def _classify_probe_failure(detail: str, *, dedicated: bool) -> str:
-    """Map collected ssh stderr to the DirectAuthReason taxonomy (spec order).
-
-    Order matters: ssh prints "Load key <path>: No such file or directory"
-    BEFORE the final "Permission denied" when the identity file is absent, so
-    the dedicated-key test comes first for dedicated probes.
-    """
-
-    lowered = detail.lower()
-    if dedicated and (
-        ("load key" in lowered and "no such file" in lowered)
-        or ("identity file" in lowered and "not accessible" in lowered)
-    ):
-        return "dedicated_key_missing"
-    if "permission denied" in lowered:
-        return "authentication_failed"
-    if "host key verification failed" in lowered:
-        return "host_key_mismatch"
-    if "host key" in lowered:  # remaining host-key context = never-trusted key
-        return "host_key_unknown"
-    if (
-        "connection refused" in lowered
-        or "connection timed out" in lowered
-        or "timed out" in lowered
-        or "could not resolve" in lowered
-        or "no route to host" in lowered
-    ):
-        return "route_unreachable"
-    return "unknown"
 
 
 def _executor_reason(exc: ExecutorError) -> str:

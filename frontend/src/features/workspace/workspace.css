@@ -194,15 +194,21 @@
 
 .ws-matrix-scroll {
   overflow-x: auto;
+  max-height: 62vh;
 }
 
 .ws-matrix {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 12.5px;
 }
 
 .ws-matrix th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-1);
   padding: 6px 10px;
   text-align: left;
   font-size: 10.5px;
@@ -220,46 +226,105 @@
   white-space: nowrap;
 }
 
+.ws-matrix__cell {
+  padding-top: 5px;
+  padding-bottom: 5px;
+  text-align: center;
+}
+
 .ws-matrix tr:last-child td {
   border-bottom: none;
 }
 
-.ws-matrix__artifact {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* Kind group header: one colSpan cell per section; carries the opaque
+   background so sticky first-column content slides under it invisibly. */
+.ws-matrix__group-row td {
+  padding: 14px 10px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  background: var(--surface-1);
+  border-bottom: none;
 }
 
-/* Matrix state marks: ✓ verified / ○ declared / — missing / ! unavailable /
-   ↻ syncing, plus the weak dash for cells without a declared placement. */
-.ws-matrix__mark {
-  display: inline-block;
-  min-width: 18px;
-  text-align: center;
-  font-size: 14px;
+/* Artifact column: the one that shrinks — server columns keep nowrap. */
+.ws-matrix__artifact {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--surface-1);
+  border-right: 1px solid var(--line);
+  box-shadow: 6px 0 6px -6px var(--line);
+  max-width: 280px;
+  padding: 7px 10px;
+}
+
+.ws-matrix__artifact .mono {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status lozenges: small mark + short word on one quiet line; color belongs
+   to the state only. Undeclared cells stay a bare muted dash, no lozenge. */
+.ws-matrix__state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 64px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.ws-matrix__state-mark {
+  font-size: 11px;
   font-weight: 700;
+  line-height: 1;
+}
+
+.ws-matrix__state--verified {
   color: var(--text-2);
 }
 
-.ws-matrix__cell--verified .ws-matrix__mark {
+.ws-matrix__state--verified .ws-matrix__state-mark {
   color: var(--healthy);
-  font-size: 15px;
 }
 
-.ws-matrix__cell--declared .ws-matrix__mark {
+.ws-matrix__state--declared,
+.ws-matrix__state--declared .ws-matrix__state-mark {
   color: var(--text-3);
 }
 
-.ws-matrix__cell--missing .ws-matrix__mark {
-  color: var(--text-2);
-}
-
-.ws-matrix__cell--unavailable .ws-matrix__mark {
+.ws-matrix__state--missing,
+.ws-matrix__state--missing .ws-matrix__state-mark {
   color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
 }
 
-.ws-matrix__cell--syncing .ws-matrix__mark {
-  color: var(--accent);
+.ws-matrix__state--unavailable,
+.ws-matrix__state--unavailable .ws-matrix__state-mark {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.ws-matrix__state--syncing,
+.ws-matrix__state--syncing .ws-matrix__state-mark {
+  color: var(--cold, var(--accent));
+  background: color-mix(in srgb, var(--cold, var(--accent)) 12%, transparent);
+}
+
+.ws-matrix__dash {
+  display: inline-block;
+  min-width: 18px;
+  text-align: center;
+  color: var(--text-3);
 }
 
 /* -- sync dialog ------------------------------------------------------------- */
@@ -373,28 +438,66 @@
 .ws-placement-groups {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 18px;
 }
 
-.ws-placement-group__head {
+.ws-kind-section {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-bottom: 4px;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.ws-placement-group__name {
+.ws-kind-section__head {
+  padding: 0;
+  margin: 0;
+}
+
+.ws-artifact-group {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.ws-artifact-group__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px 6px;
+}
+
+.ws-artifact-group__name {
   font-size: 12.5px;
   font-weight: 600;
   color: var(--text-1);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.ws-placement {
+.ws-artifact-group__count {
+  font-size: 11px;
+  color: var(--text-3);
+  flex: none;
+}
+
+.ws-artifact-group__empty {
+  padding: 0 12px 8px;
+  margin: 0;
+}
+
+.ws-placement-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 9px 12px;
-  margin-bottom: 6px;
+  padding: 6px 12px;
+}
+
+.ws-artifact-group .ws-placement-row + .ws-placement-row {
+  border-top: 1px solid var(--line);
 }
 
 .ws-placement__main {
@@ -425,6 +528,8 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
 }
 
 .ws-placement__side {

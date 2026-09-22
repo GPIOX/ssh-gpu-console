@@ -210,8 +210,14 @@ def test_server_roots_and_suggestion(tmp_path: Path) -> None:
     service.set_server_roots("srv-a", ServerRootsUpdate(dataset_root="/DataDisk/datasets"))
     assert repo.server_roots("srv-a") is not None
     artifact = service.create_artifact(ArtifactCreate(kind="dataset", name="IVMSD", version="v1"))
-    assert (
-        service.suggest_target_path("srv-a", artifact.artifact_id) == "/DataDisk/datasets/IVMSD:v1"
+    # Canonical safe_artifact_leaf naming (same as Project Sync), no reason.
+    assert service.suggest_target_path("srv-a", artifact.artifact_id) == (
+        "/DataDisk/datasets/IVMSD--v1",
+        None,
+    )
+    assert service.suggest_target_path("srv-no-roots", artifact.artifact_id) == (
+        None,
+        "server_root_not_configured",
     )
 
 

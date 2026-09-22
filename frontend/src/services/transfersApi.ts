@@ -175,6 +175,7 @@ export function normalizeTransferPlan(raw: unknown): TransferPlan | null {
     source_size_b: intOrNull(raw.source_size_b),
     target_free_b: intOrNull(raw.target_free_b),
     space_warning: typeof raw.space_warning === "string" ? raw.space_warning : "",
+    direct_auth_reason: optionalStr(raw.direct_auth_reason),
   };
 }
 

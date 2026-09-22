@@ -1,12 +1,13 @@
 /**
- * PlacementTable — per-artifact placement rows for a set of artifacts.
+ * PlacementTable — placements grouped by artifact kind (code → dataset →
+ * model), then per artifact: one bordered group block holding its rows.
  * Each row: server display name (registry), mono remote path, an explicit
  * Inspect action, and the RAM-only inspection result (state chip + file
  * facts). Inspections are never persisted and vanish on reload by design.
  */
 
 import { useState } from "react";
-import { Button, Chip, Dialog, Menu, Panel, type ChipTone } from "../../design";
+import { Button, Chip, Dialog, Menu, type ChipTone } from "../../design";
 import { tf, useRelative, useT } from "../../i18n";
 import { useConsoleStore } from "../../store/consoleStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
@@ -17,7 +18,7 @@ import type {
 } from "../../types/workspace";
 import { formatBytes } from "../../utils/format";
 import { useNow } from "../../utils/clock";
-import { artifactLabel, kindLabel } from "./shared";
+import { artifactLabel, groupArtifactsByKind, kindLabel } from "./shared";
 import "./workspace.css";
 
 function stateLabel(t: ReturnType<typeof useT>, state: InspectionState): string {
@@ -81,92 +82,103 @@ export function PlacementTable({
 
   return (
     <div className="ws-placement-groups">
-      {artifacts.map((artifact) => {
-        const rows = byArtifact.get(artifact.artifact_id) ?? [];
-        return (
-          <div key={artifact.artifact_id} className="ws-placement-group">
-            <div className="ws-placement-group__head">
-              <span className="ws-placement-group__name mono">{artifactLabel(artifact)}</span>
-              <Chip>{kindLabel(t, artifact.kind)}</Chip>
-            </div>
-            {rows.length === 0 ? (
-              <p className="ws-hint">{t.workspace.noPlacements}</p>
-            ) : (
-              rows.map((placement) => {
-                const server = servers.find((s) => s.server_id === placement.server_id);
-                const inspection = inspections[placement.placement_id];
-                const busy = inspecting[placement.placement_id] === true;
-                const failure = inspectErrors[placement.placement_id] ?? "";
-                return (
-                  <Panel key={placement.placement_id} className="ws-placement">
-                    <div className="ws-placement__main">
-                      <span className="ws-placement__server">
-                        {server !== undefined ? server.display_name : placement.server_id}
-                        {server === undefined && (
-                          <Chip className="ws-placement__unknown">{t.workspace.unknownServer}</Chip>
-                        )}
-                      </span>
-                      <span className="ws-placement__path mono">{placement.remote_path}</span>
-                    </div>
-                    <div className="ws-placement__side">
-                      {inspection !== undefined && (
-                        <span className="ws-inspection">
-                          <Chip tone={stateTone(inspection.state)} mono>
-                            {stateLabel(t, inspection.state)}
-                          </Chip>
-                          {inspection.file_type !== null && (
-                            <span className="ws-inspection__fact mono">
-                              {inspection.file_type}
+      {groupArtifactsByKind(artifacts).map(({ kind, artifacts: kindArtifacts }) => (
+        <section key={kind} className="ws-kind-section">
+          <p className="ws-kind-section__head micro-label">
+            {tf(t.workspace.matrixGroupCount, { label: kindLabel(t, kind), n: kindArtifacts.length })}
+          </p>
+          {kindArtifacts.map((artifact) => {
+            const rows = byArtifact.get(artifact.artifact_id) ?? [];
+            return (
+              <div key={artifact.artifact_id} className="ws-artifact-group">
+                <div className="ws-artifact-group__head">
+                  <span className="ws-artifact-group__name mono">{artifactLabel(artifact)}</span>
+                  <span className="ws-artifact-group__count">
+                    {tf(t.workspace.placementCount, { n: rows.length })}
+                  </span>
+                </div>
+                {rows.length === 0 ? (
+                  <p className="ws-hint ws-artifact-group__empty">{t.workspace.noPlacements}</p>
+                ) : (
+                  rows.map((placement) => {
+                    const server = servers.find((s) => s.server_id === placement.server_id);
+                    const inspection = inspections[placement.placement_id];
+                    const busy = inspecting[placement.placement_id] === true;
+                    const failure = inspectErrors[placement.placement_id] ?? "";
+                    return (
+                      <div key={placement.placement_id} className="ws-placement-row">
+                        <div className="ws-placement__main">
+                          <span className="ws-placement__server">
+                            {server !== undefined ? server.display_name : placement.server_id}
+                            {server === undefined && (
+                              <Chip className="ws-placement__unknown">
+                                {t.workspace.unknownServer}
+                              </Chip>
+                            )}
+                          </span>
+                          <span className="ws-placement__path mono">{placement.remote_path}</span>
+                        </div>
+                        <div className="ws-placement__side">
+                          {inspection !== undefined && (
+                            <span className="ws-inspection">
+                              <Chip tone={stateTone(inspection.state)} mono>
+                                {stateLabel(t, inspection.state)}
+                              </Chip>
+                              {inspection.file_type !== null && (
+                                <span className="ws-inspection__fact mono">
+                                  {inspection.file_type}
+                                </span>
+                              )}
+                              {inspection.size_b !== null && (
+                                <span className="ws-inspection__fact mono tnum">
+                                  {formatBytes(inspection.size_b)}
+                                </span>
+                              )}
+                              {inspection.file_count !== null && (
+                                <span className="ws-inspection__fact mono tnum">
+                                  {tf(t.workspace.fileCount, { n: inspection.file_count })}
+                                </span>
+                              )}
+                              {inspection.checked_at !== "" && (
+                                <span
+                                  className="ws-inspection__ago mono"
+                                  title={inspection.checked_at}
+                                >
+                                  {tf(t.workspace.inspectedAgo, {
+                                    ago: relative(inspection.checked_at, now),
+                                  })}
+                                </span>
+                              )}
                             </span>
                           )}
-                          {inspection.size_b !== null && (
-                            <span className="ws-inspection__fact mono tnum">
-                              {formatBytes(inspection.size_b)}
-                            </span>
-                          )}
-                          {inspection.file_count !== null && (
-                            <span className="ws-inspection__fact mono tnum">
-                              {tf(t.workspace.fileCount, { n: inspection.file_count })}
-                            </span>
-                          )}
-                          {inspection.checked_at !== "" && (
-                            <span
-                              className="ws-inspection__ago mono"
-                              title={inspection.checked_at}
-                            >
-                              {tf(t.workspace.inspectedAgo, {
-                                ago: relative(inspection.checked_at, now),
-                              })}
-                            </span>
-                          )}
-                        </span>
-                      )}
-                      {failure !== "" && <span className="field__error">{failure}</span>}
-                      <Button
-                        onClick={() => void inspectPlacement(placement.placement_id)}
-                        disabled={busy}
-                      >
-                        {busy ? t.workspace.inspecting : t.workspace.inspect}
-                      </Button>
-                      <span
-                        className="ws-menu-hold"
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <RowMenu
-                          placement={placement}
-                          onEdit={onEdit}
-                          onRemove={onRemove}
-                          onSync={onSync}
-                        />
-                      </span>
-                    </div>
-                  </Panel>
-                );
-              })
-            )}
-          </div>
-        );
-      })}
+                          {failure !== "" && <span className="field__error">{failure}</span>}
+                          <Button
+                            onClick={() => void inspectPlacement(placement.placement_id)}
+                            disabled={busy}
+                          >
+                            {busy ? t.workspace.inspecting : t.workspace.inspect}
+                          </Button>
+                          <span
+                            className="ws-menu-hold"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <RowMenu
+                              placement={placement}
+                              onEdit={onEdit}
+                              onRemove={onRemove}
+                              onSync={onSync}
+                            />
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            );
+          })}
+        </section>
+      ))}
     </div>
   );
 }

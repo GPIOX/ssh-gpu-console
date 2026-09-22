@@ -4,7 +4,8 @@ Artifact display ``name``/``version`` (e.g. "IVMSD" / "v1") must never be
 interpolated into remote paths as-is: display text may contain slashes,
 shell metacharacters or control bytes. These helpers turn display text into
 deterministic, readable path components and are the single source of truth
-for Project Sync target-path generation. Case is preserved for readability;
+for target-path generation — Project Sync planning AND manual transfer
+suggestions alike. Case is preserved for readability;
 results depend only on input order and content (no ``hash()``), so they are
 stable across processes.
 """
@@ -17,6 +18,7 @@ import string
 import unicodedata
 
 from app.core.errors import ConflictError
+from app.models.workspace import ArtifactKind, ServerRoots
 
 # ASCII characters safe to keep verbatim in a POSIX filename component.
 _SAFE_ASCII = frozenset(string.ascii_letters + string.digits + "._-")
@@ -139,3 +141,32 @@ def dedupe_leaves(leaves: dict[str, str], artifact_ids: dict[str, str]) -> dict[
         else:
             raise ConflictError(f"artifact leaf for {artifact_id} cannot be deduplicated")
     return resolved
+
+
+def root_for_kind(roots: ServerRoots, kind: ArtifactKind) -> str | None:
+    """The kind's configured root on a server; None when the kind has none."""
+    if kind is ArtifactKind.CODE:
+        return roots.project_root
+    if kind is ArtifactKind.DATASET:
+        return roots.dataset_root
+    if kind is ArtifactKind.MODEL:
+        return roots.model_root
+    return None
+
+
+def claim_path(base: str, artifact_id: str, taken: set[str]) -> str | None:
+    """Claim a non-colliding automatic target path; None when exhausted.
+
+    Escalates exactly like :func:`dedupe_leaves`: the base leaf keeps its path
+    when free, otherwise "--" plus a prefix of the artifact id (6, 8, 12
+    characters, then the full id) is appended. The caller records the claimed
+    path in its own registry (plan-scoped or server-wide); repeated calls with
+    the same inputs return the same path (no ``hash()``).
+    """
+    if base not in taken:
+        return base
+    for width in (6, 8, 12, len(artifact_id)):
+        candidate = f"{base}--{artifact_id[:width]}"
+        if candidate not in taken:
+            return candidate
+    return None

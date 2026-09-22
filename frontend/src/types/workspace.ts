@@ -220,3 +220,12 @@ export interface ServerRootsUpdate {
   model_root?: string | null;
   output_root?: string | null;
 }
+
+/** Manual transfer target-path suggestion, built backend-side with the same
+ *  canonical (safe_artifact_leaf) naming Project Sync uses. A null path means
+ *  no suggestion could be built; `reason` says why (e.g.
+ *  "server_root_not_configured"). */
+export interface SuggestTargetPath {
+  target_path: string | null;
+  reason: string | null;
+}

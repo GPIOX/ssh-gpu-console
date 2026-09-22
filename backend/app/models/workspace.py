@@ -240,3 +240,13 @@ class ServerRootsUpdate(BaseModel):
     dataset_root: str | None = Field(default=None, min_length=1, max_length=512)
     model_root: str | None = Field(default=None, min_length=1, max_length=512)
     output_root: str | None = Field(default=None, min_length=1, max_length=512)
+
+
+class SuggestTargetPath(BaseModel):
+    """Manual transfer target-path suggestion: canonical path or the reason
+    none could be built (e.g. "server_root_not_configured")."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_path: str | None = None
+    reason: str | None = None

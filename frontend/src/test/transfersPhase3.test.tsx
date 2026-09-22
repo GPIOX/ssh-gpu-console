@@ -12,6 +12,7 @@ import {
   normalizeTransferPlan,
   transfersApi,
 } from "../services/transfersApi";
+import { workspaceApi } from "../services/workspaceApi";
 import { transferKind } from "../types/transfers";
 import { useConsoleStore } from "../store/consoleStore";
 import { useTransferStore } from "../store/transferStore";
@@ -333,6 +334,12 @@ describe("NewTransferDialog: plan space surfaces", () => {
       },
       rootsLoading: {},
       rootsErrors: {},
+    });
+    // The suggestion is backend-sourced now; mock it so the debounced plan
+    // (whose space surfaces these tests assert) is reached at all.
+    vi.spyOn(workspaceApi, "suggestTargetPath").mockResolvedValue({
+      target_path: "/data/DINOv2:b",
+      reason: null,
     });
   });
 

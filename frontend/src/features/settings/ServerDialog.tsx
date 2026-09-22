@@ -189,6 +189,9 @@ function LocalAuthSection({
   const [ui, setUi] = useState<PasswordUIState>({ phase: "idle", editing: false });
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmingClear, setConfirmingClear] = useState(false);
+  // Last attempted password action — the inline error prefix must name the
+  // failed ACTION, not the (possibly stale) configured flag.
+  const [lastPasswordAction, setLastPasswordAction] = useState<"save" | "clear" | null>(null);
 
   // Unmount (or target change) drops every password trace instantly.
   useEffect(() => {
@@ -198,6 +201,7 @@ function LocalAuthSection({
       setUi({ phase: "idle", editing: false });
       setActionError(null);
       setConfirmingClear(false);
+      setLastPasswordAction(null);
     };
   }, [serverId]);
 
@@ -205,6 +209,7 @@ function LocalAuthSection({
   const busy = ui.phase === "saving" || ui.phase === "clearing";
 
   const save = async (): Promise<void> => {
+    setLastPasswordAction("save");
     if (password === "") return;
     setUi({ phase: "saving" });
     setActionError(null);
@@ -221,6 +226,7 @@ function LocalAuthSection({
   };
 
   const clear = async (): Promise<void> => {
+    setLastPasswordAction("clear");
     setUi({ phase: "clearing" });
     setActionError(null);
     try {
@@ -359,7 +365,10 @@ function LocalAuthSection({
           </div>
           {actionError !== null && (
             <p className="field__error">
-              {configured ? t.serverAuth.passwordClearFailed : t.serverAuth.passwordSaveFailed}:{" "}
+              {lastPasswordAction === "clear"
+                ? t.serverAuth.passwordClearFailed
+                : t.serverAuth.passwordSaveFailed}
+              :{" "}
               {actionError}
             </p>
           )}

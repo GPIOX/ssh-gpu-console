@@ -1,13 +1,13 @@
 /**
  * New transfer dialog. Artifact → source placement (filtered to the artifact)
- * → target server → target path (auto-suggested from the server's kind root
- * + name:version until the user edits it) → method (自动/直接同步/本机中转,
- * default 自动). The target suggestion prefers the artifact's project peers —
- * servers that host a placement of any artifact of a project containing the
- * selected artifact (minus the source): the current choice is kept when it is
- * already a peer, otherwise the first enabled peer wins; without peers only a
- * target that is unset or collides with the source is re-aimed. Every field
- * change debounce-posts /transfers/plan and shows
+ * → target server → target path (suggested by the backend with the same
+ * canonical naming Project Sync uses, until the user edits it) → method
+ * (自动/直接同步/本机中转, default 自动). The target suggestion prefers the
+ * artifact's project peers — servers that host a placement of any artifact of
+ * a project containing the selected artifact (minus the source): the current
+ * choice is kept when it is already a peer, otherwise the first enabled peer
+ * wins; without peers only a target that is unset or collides with the source
+ * is re-aimed. Every field change debounce-posts /transfers/plan and shows
  * per-method availability + reason — planning is an explicit SSH preflight,
  * so it only runs on deliberate, complete input. The preview also surfaces the
  * preflight's space warning (or, quietly, the target's free space) and the
@@ -27,6 +27,7 @@ import { useConsoleStore } from "../../store/consoleStore";
 import { useTransferStore } from "../../store/transferStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { transfersApi } from "../../services/transfersApi";
+import { workspaceApi } from "../../services/workspaceApi";
 import { formatBytes } from "../../utils/format";
 import type {
   TransferPlan,
@@ -35,11 +36,8 @@ import type {
   VerifyMode,
 } from "../../types/transfers";
 import type { ServerRecord } from "../../types/models";
-import type {
-  ArtifactRecord,
-  PlacementRecord,
-  ProjectRecord,
-} from "../../types/workspace";
+import type { PlacementRecord, ProjectRecord } from "../../types/workspace";
+import { reasonText, setupReasonAllowed } from "../settings/directAuthUi";
 import { artifactLabel } from "../workspace/shared";
 import { DirectAuthSetupDialog } from "./DirectAuthSetupDialog";
 import { cx } from "../../utils/cx";
@@ -47,15 +45,6 @@ import "./transfers.css";
 
 const STRATEGY_OPTIONS: TransferStrategy[] = ["auto", "direct_rsync", "local_relay"];
 const PLAN_DEBOUNCE_MS = 400;
-
-/** ServerRoots kind → root field used for the target path suggestion. */
-function kindRootField(
-  kind: ArtifactRecord["kind"],
-): "project_root" | "dataset_root" | "model_root" {
-  if (kind === "dataset") return "dataset_root";
-  if (kind === "model") return "model_root";
-  return "project_root";
-}
 
 function strategyLabel(t: ReturnType<typeof useT>, strategy: TransferStrategy): string {
   if (strategy === "direct_rsync") return t.transfers.strategyDirect;
@@ -174,8 +163,6 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
   const artifacts = useWorkspaceStore((state) => state.artifacts);
   const placements = useWorkspaceStore((state) => state.placements);
   const projects = useWorkspaceStore((state) => state.projects);
-  const serverRoots = useWorkspaceStore((state) => state.serverRoots);
-  const loadServerRoots = useWorkspaceStore((state) => state.loadServerRoots);
   const servers = useConsoleStore((state) => state.servers);
 
   const [artifactId, setArtifactId] = useState("");
@@ -184,6 +171,9 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
   const [targetPath, setTargetPath] = useState("");
   const [strategy, setStrategy] = useState<TransferStrategy>("auto");
   const [pathTouched, setPathTouched] = useState(false);
+  // True only while the backend could not suggest a path (missing root or a
+  // failed request) and the user has not typed one of their own.
+  const [pathHint, setPathHint] = useState(false);
   const [plan, setPlan] = useState<TransferPlan | null>(null);
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -195,6 +185,7 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
   const [directChanged, setDirectChanged] = useState(false);
   const [planNonce, setPlanNonce] = useState(0);
   const planSeq = useRef(0);
+  const suggestSeq = useRef(0);
 
   const artifactPlacements = placements.filter((p) => p.artifact_id === artifactId);
   const selectedPlacement = artifactPlacements.find((p) => p.placement_id === placementId);
@@ -232,6 +223,7 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
     );
     setTargetPath("");
     setPathTouched(false);
+    setPathHint(false);
     setStrategy("auto");
     setPlan(null);
     setPlanError(null);
@@ -241,29 +233,32 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
     setPlanNonce(0);
   }, [open, prefill, artifacts, placements, projects, servers]);
 
-  // Target path suggestion from the target server's kind root + name:version,
-  // only while the user has not typed their own path. Fetches roots on demand.
+  // Target path suggestion, fetched from the backend (the SAME canonical
+  // safe_artifact_leaf naming Project Sync uses — never built locally from
+  // display labels). Only while the user has not typed their own path and the
+  // target differs from the source; a null/unavailable response clears the
+  // path and shows the manual-entry hint instead.
   useEffect(() => {
     if (!open || pathTouched) return;
-    if (targetServerId === "" || targetServerId === sourceServerId) return;
-    if (serverRoots[targetServerId] === undefined) {
-      void loadServerRoots(targetServerId);
-      return;
-    }
-    const artifact = artifacts.find((a) => a.artifact_id === artifactId);
-    const root = serverRoots[targetServerId]?.[kindRootField(artifact?.kind ?? "dataset")];
-    if (artifact === undefined || root === null || root === "") return;
-    setTargetPath(`${root}/${artifactLabel(artifact)}`);
-  }, [
-    open,
-    pathTouched,
-    artifactId,
-    targetServerId,
-    sourceServerId,
-    serverRoots,
-    artifacts,
-    loadServerRoots,
-  ]);
+    if (targetServerId === "" || targetServerId === sourceServerId || artifactId === "") return;
+    const seq = ++suggestSeq.current;
+    workspaceApi
+      .suggestTargetPath(artifactId, targetServerId)
+      .then((result) => {
+        if (seq !== suggestSeq.current) return; // out-of-order response
+        if (result.target_path !== null) {
+          setTargetPath(result.target_path);
+          setPathHint(false);
+        } else {
+          setTargetPath("");
+          setPathHint(true);
+        }
+      })
+      .catch(() => {
+        // Unavailable: leave any visible path as-is, offer manual entry.
+        if (seq === suggestSeq.current) setPathHint(true);
+      });
+  }, [open, pathTouched, artifactId, targetServerId, sourceServerId]);
 
   const request = buildRequest(artifactId, placementId, targetServerId, targetPath, strategy);
 
@@ -432,6 +427,9 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
               setTargetPath(event.target.value);
             }}
           />
+          {pathHint && !pathTouched && (
+            <p className="ws-hint">{t.transfers.targetPathNoRoot}</p>
+          )}
         </Field>
 
         <Field label={t.transfers.method}>
@@ -464,9 +462,13 @@ export function NewTransferDialog({ open }: NewTransferDialogProps) {
                 {!directAvailable && (
                   <>
                     <p className="tf-plan__reason">
-                      {tf(t.transfers.reasonLead, { text: t.transfers.authFailReason })}
+                      {tf(t.transfers.reasonLead, {
+                        text:
+                          reasonText(t, plan.direct_auth_reason ?? null) ??
+                          t.transfers.authFailReason,
+                      })}
                     </p>
-                    {directPair && (
+                    {directPair && setupReasonAllowed(plan.direct_auth_reason ?? null) && (
                       <div className="tf-plan__direct">
                         <Button onClick={() => setSetupOpen(true)}>
                           {t.transfers.configureDirect}

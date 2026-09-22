@@ -35,7 +35,7 @@ import { useRelative, useT, tf, type Dict } from "../../i18n";
 import { useNow } from "../../utils/clock";
 import { cx } from "../../utils/cx";
 import { WORKSPACE_HASH } from "../../shell/routes";
-import { artifactLabel, kindLabel } from "./shared";
+import { artifactLabel, groupArtifactsByKind, kindLabel } from "./shared";
 import { ProjectDialog } from "./ProjectDialog";
 import { PlacementDialog } from "./PlacementDialog";
 import { PlacementRemoveDialog, PlacementTable } from "./PlacementTable";
@@ -48,21 +48,21 @@ function commandLine(config: LaunchConfigRecord): string {
   return `${config.program}${args}`;
 }
 
-/** Glyph + accessible label per matrix state; null = no declared placement. */
-function cellMark(t: Dict, state: DistributionState | null): { glyph: string; label: string } {
+/** Glyph + short word per matrix state; null = no declared placement. */
+function cellState(t: Dict, state: DistributionState | null): { glyph: string; word: string } {
   switch (state) {
     case "verified":
-      return { glyph: "✓", label: t.workspace.matrixPresent };
+      return { glyph: "✓", word: t.workspace.matrixPresent };
     case "declared":
-      return { glyph: "○", label: t.workspace.stateDeclared };
+      return { glyph: "○", word: t.workspace.stateDeclared };
     case "missing":
-      return { glyph: "—", label: t.workspace.matrixMissing };
+      return { glyph: "—", word: t.workspace.matrixMissing };
     case "unavailable":
-      return { glyph: "!", label: t.workspace.stateUnavailable };
+      return { glyph: "!", word: t.workspace.stateUnavailable };
     case "syncing":
-      return { glyph: "↻", label: t.workspace.stateSyncing };
+      return { glyph: "↻", word: t.workspace.stateSyncing };
     default:
-      return { glyph: "—", label: t.workspace.matrixUndeclared };
+      return { glyph: "—", word: t.workspace.matrixUndeclared };
   }
 }
 
@@ -300,61 +300,81 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                     ))}
                   </tr>
                 </thead>
-                <tbody>
-                  {referenced.map((artifact) => (
-                    <tr key={artifact.artifact_id}>
-                      <td className="ws-matrix__artifact">
-                        <span className="mono">{artifactLabel(artifact)}</span>
-                        <Chip>{kindLabel(t, artifact.kind)}</Chip>
+                {groupArtifactsByKind(referenced).map(({ kind, artifacts: groupArtifacts }) => (
+                  <tbody key={kind}>
+                    <tr className="ws-matrix__group-row">
+                      <td colSpan={servers.length + 1}>
+                        {tf(t.workspace.matrixGroupCount, {
+                          label: kindLabel(t, kind),
+                          n: groupArtifacts.length,
+                        })}
                       </td>
-                      {servers.map((server) => {
-                        // The snapshot lists declared placements only; cells
-                        // without an item fall back to the declared placement
-                        // (○) and otherwise render the weak no-declaration dash.
-                        const item = distribution?.items.find(
-                          (entry) =>
-                            entry.artifact_id === artifact.artifact_id &&
-                            entry.server_id === server.server_id,
-                        );
-                        const placement = placements.find(
-                          (p) =>
-                            p.artifact_id === artifact.artifact_id &&
-                            p.server_id === server.server_id,
-                        );
-                        const state: DistributionState | null =
-                          item?.state ?? (placement !== undefined ? "declared" : null);
-                        const titleParts = [item?.remote_path ?? placement?.remote_path ?? ""];
-                        if (item?.checked_at !== undefined && item.checked_at !== null) {
-                          titleParts.push(relative(item.checked_at, now));
-                        }
-                        if (item?.detail !== undefined && item.detail !== null && item.detail !== "") {
-                          titleParts.push(item.detail);
-                        }
-                        const mark = cellMark(t, state);
-                        return (
-                          <td
-                            key={server.server_id}
-                            className={cx(
-                              "ws-matrix__cell",
-                              state !== null && `ws-matrix__cell--${state}`,
-                            )}
-                          >
-                            <span
-                              className={cx(
-                                "ws-matrix__mark mono",
-                                state === null && "ws-matrix__mark--undeclared",
-                              )}
-                              aria-label={mark.label}
-                              title={titleParts.some((part) => part !== "") ? titleParts.join("\n") : undefined}
-                            >
-                              {mark.glyph}
-                            </span>
-                          </td>
-                        );
-                      })}
                     </tr>
-                  ))}
-                </tbody>
+                    {groupArtifacts.map((artifact) => (
+                      <tr key={artifact.artifact_id}>
+                        <td className="ws-matrix__artifact">
+                          <span className="mono" title={artifactLabel(artifact)}>
+                            {artifactLabel(artifact)}
+                          </span>
+                        </td>
+                        {servers.map((server) => {
+                          // The snapshot lists declared placements only; cells
+                          // without an item fall back to the declared placement
+                          // (○) and otherwise render the weak no-declaration dash.
+                          const item = distribution?.items.find(
+                            (entry) =>
+                              entry.artifact_id === artifact.artifact_id &&
+                              entry.server_id === server.server_id,
+                          );
+                          const placement = placements.find(
+                            (p) =>
+                              p.artifact_id === artifact.artifact_id &&
+                              p.server_id === server.server_id,
+                          );
+                          const state: DistributionState | null =
+                            item?.state ?? (placement !== undefined ? "declared" : null);
+                          const titleParts = [item?.remote_path ?? placement?.remote_path ?? ""];
+                          if (item?.checked_at !== undefined && item.checked_at !== null) {
+                            titleParts.push(relative(item.checked_at, now));
+                          }
+                          if (
+                            item?.detail !== undefined &&
+                            item.detail !== null &&
+                            item.detail !== ""
+                          ) {
+                            titleParts.push(item.detail);
+                          }
+                          const { glyph, word } = cellState(t, state);
+                          const title = titleParts.some((part) => part !== "")
+                            ? titleParts.join("\n")
+                            : undefined;
+                          return (
+                            <td
+                              key={server.server_id}
+                              className={cx(
+                                "ws-matrix__cell",
+                                state !== null && `ws-matrix__cell--${state}`,
+                              )}
+                              aria-label={`${artifactLabel(artifact)} / ${server.display_name} / ${word}`}
+                              title={title}
+                            >
+                              {state === null ? (
+                                <span className="ws-matrix__dash mono">{glyph}</span>
+                              ) : (
+                                <span
+                                  className={cx("ws-matrix__state", `ws-matrix__state--${state}`)}
+                                >
+                                  <span className="ws-matrix__state-mark mono">{glyph}</span>
+                                  <span>{word}</span>
+                                </span>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                ))}
               </table>
             </div>
           )}

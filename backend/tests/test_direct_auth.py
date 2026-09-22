@@ -25,9 +25,9 @@ import pytest
 from app.core.config import Settings
 from app.core.errors import ConflictError, NotFoundError
 from app.direct_auth.metadata import DirectAuthMetadata
+from app.direct_auth.reasons import _classify_probe_failure
 from app.direct_auth.service import (
     DirectAuthService,
-    _classify_probe_failure,
     _openssh_fingerprint,
 )
 from app.models.direct_auth import DirectAuthPairMetadata
@@ -1011,7 +1011,7 @@ async def test_planner_unavailable_falls_back_to_relay() -> None:
     )
     assert plan.strategy_selected == TransferStrategy.LOCAL_RELAY
     assert plan.direct_auth_method is None
-    assert plan.direct_auth_reason is None
+    assert plan.direct_auth_reason == "authentication_failed"
     assert "direct rsync unavailable" in plan.reason
     assert "Permission denied" in plan.reason
 
@@ -1031,6 +1031,85 @@ async def test_planner_rsync_missing_reports_reason_code() -> None:
     )
     assert plan.strategy_selected == TransferStrategy.LOCAL_RELAY
     assert plan.direct_auth_reason == "rsync_missing_source"
+
+
+async def test_planner_rsync_missing_target_reports_reason_code() -> None:
+    source_server, target_server = _plan_servers()
+    plan = await plan_transfer(
+        requested=TransferStrategy.AUTO,
+        source_server=source_server,
+        target_server=target_server,
+        source_executor=_RsyncExecutor(),
+        target_executor=_RsyncExecutor(rsync_ok=False),
+        source_path="/srv/data",
+        target_path="/srv/data",
+        artifact_id="artifact-1",
+        ssh=_PlanSsh(_PlanProbeSession([])),  # type: ignore[arg-type]
+    )
+    assert plan.strategy_selected == TransferStrategy.LOCAL_RELAY
+    assert plan.direct_auth_reason == "rsync_missing_target"
+
+
+async def test_planner_probe_failure_classifies_authentication_failed() -> None:
+    """The COMMON case (rsync present, SSH probe rejected) now carries a code."""
+    plan = await _plan(TransferStrategy.AUTO, [(255, "Permission denied (publickey,password).")])
+    assert plan.strategy_selected == TransferStrategy.LOCAL_RELAY
+    assert plan.direct_auth_reason == "authentication_failed"
+    # plan.reason stays the secondary raw diagnostic.
+    assert "Permission denied" in plan.reason
+
+
+async def test_planner_probe_failure_classifies_host_key_unknown() -> None:
+    plan = await _plan(
+        TransferStrategy.AUTO,
+        [(255, "No RSA host key is known for target-node.example and you have requested strict")],
+    )
+    assert plan.direct_auth_reason == "host_key_unknown"
+
+
+async def test_planner_dedicated_failure_classifies_from_dedicated_detail() -> None:
+    """After a native failure the dedicated probe's detail decides (dedicated path)."""
+    plan = await _plan(
+        TransferStrategy.AUTO,
+        [
+            (255, "Permission denied (publickey,password)."),
+            (255, "Load key '/home/u/.ssh/gpu-console/keys/pair': No such file or directory"),
+        ],
+        dedicated=True,
+    )
+    assert plan.strategy_selected == TransferStrategy.LOCAL_RELAY
+    assert plan.direct_auth_reason == "dedicated_key_missing"
+    assert "No such file" in plan.reason
+
+
+async def test_planner_transport_failure_reports_route_unreachable() -> None:
+    """A transport exception around the probe never yields a stderr code."""
+    source_server, target_server = _plan_servers()
+
+    class _PlanBrokenSsh:
+        def resolve_params_for(self, server: Any) -> Any:
+            return SimpleNamespace(
+                host=server.ssh_host, port=server.port or 22, username=server.username
+            )
+
+        async def transfer_command_session(self, server: Any) -> Any:
+            del server
+            raise OSError("connection refused")
+
+    plan = await plan_transfer(
+        requested=TransferStrategy.AUTO,
+        source_server=source_server,
+        target_server=target_server,
+        source_executor=_RsyncExecutor(),
+        target_executor=_RsyncExecutor(),
+        source_path="/srv/data",
+        target_path="/srv/data",
+        artifact_id="artifact-1",
+        ssh=_PlanBrokenSsh(),  # type: ignore[arg-type]
+    )
+    assert plan.strategy_selected == TransferStrategy.LOCAL_RELAY
+    assert plan.direct_auth_reason == "route_unreachable"
+    assert "preflight probe failed" in plan.reason
 
 
 def test_rsync_command_with_dedicated_key_exact() -> None:

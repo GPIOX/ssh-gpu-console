@@ -41,6 +41,15 @@ function isTextEntry(element: HTMLElement): boolean {
   return false;
 }
 
+// Only the top-most open dialog handles Escape and the Tab trap; portals keep
+// DOM-order stacking, so no z-index manager is added.
+const dialogStack: string[] = [];
+let nextDialogId = 0;
+
+function isTop(id: string | null): boolean {
+  return id !== null && dialogStack[dialogStack.length - 1] === id;
+}
+
 export interface DialogProps {
   open: boolean;
   onClose: () => void;
@@ -56,6 +65,7 @@ export function Dialog({ open, onClose, title, children, width = 460, className 
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
+  const idRef = useRef<string | null>(null);
 
   // Hosts re-render while the dialog is open (clock ticks, store updates) and
   // pass a fresh inline closure each time; the focus effect below must key on
@@ -67,6 +77,9 @@ export function Dialog({ open, onClose, title, children, width = 460, className 
 
   useEffect(() => {
     if (!open) return;
+    const id = idRef.current ?? `dialog-${nextDialogId++}`;
+    idRef.current = id;
+    dialogStack.push(id);
     restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const raf = requestAnimationFrame(() => {
       const panel = panelRef.current;
@@ -77,9 +90,12 @@ export function Dialog({ open, onClose, title, children, width = 460, className 
     });
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        // A lower dialog must not react while a dialog above it is open.
+        if (!isTop(id)) return;
         event.stopPropagation();
         onCloseRef.current();
       } else if (event.key === "Tab") {
+        if (!isTop(id)) return;
         trapTab(event, panelRef.current);
       }
     };
@@ -87,6 +103,8 @@ export function Dialog({ open, onClose, title, children, width = 460, className 
     return () => {
       cancelAnimationFrame(raf);
       document.removeEventListener("keydown", onKeyDown);
+      const index = dialogStack.indexOf(id);
+      if (index !== -1) dialogStack.splice(index, 1);
       restoreFocusRef.current?.focus();
     };
   }, [open]);
@@ -96,7 +114,7 @@ export function Dialog({ open, onClose, title, children, width = 460, className 
     <div
       className="dialog-overlay"
       onPointerDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (isTop(idRef.current) && event.target === event.currentTarget) onClose();
       }}
     >
       <div

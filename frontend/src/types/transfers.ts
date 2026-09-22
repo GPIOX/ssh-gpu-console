@@ -66,6 +66,11 @@ export interface TransferPlan {
   target_free_b: number | null;
   /** "Not enough space" warning text for the plan preview; "" = none. */
   space_warning: string;
+  /**
+   * Phase 4.2D: DirectAuthReason taxonomy code for an unavailable direct
+   * rsync (why it is off); null when direct rsync is available.
+   */
+  direct_auth_reason?: string | null;
 }
 
 export interface TransferRequest {

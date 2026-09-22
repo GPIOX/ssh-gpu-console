@@ -102,6 +102,26 @@ const placement: PlacementRecord = {
   updated_at: NOW,
 };
 
+const artifactB: ArtifactRecord = {
+  artifact_id: "a2",
+  kind: "dataset",
+  name: "Other",
+  version: "v2",
+  description: "",
+  immutable: true,
+  created_at: NOW,
+  updated_at: NOW,
+};
+
+const placementB: PlacementRecord = {
+  placement_id: "pl2",
+  artifact_id: "a2",
+  server_id: "srv-a",
+  remote_path: "/data/other",
+  created_at: NOW,
+  updated_at: NOW,
+};
+
 function resetStores(): void {
   useTransferStore.setState({
     jobs: [],
@@ -322,11 +342,18 @@ describe("NewTransferDialog", () => {
       placements: [placement],
       placementsLoading: false,
       placementsError: null,
+      // The suggestion must come from the backend API — the dialog must not
+      // build paths from these roots locally (kept here to prove it).
       serverRoots: {
         "srv-b": { project_root: "/proj", dataset_root: "/data", model_root: "/models", output_root: null },
       },
       rootsLoading: {},
       rootsErrors: {},
+    });
+    // Default backend suggestion for every dialog test.
+    vi.spyOn(workspaceApi, "suggestTargetPath").mockResolvedValue({
+      target_path: "/data/DINOv2:b",
+      reason: null,
     });
   });
 
@@ -347,12 +374,13 @@ describe("NewTransferDialog", () => {
     render(<NewTransferDialog open />);
 
     // Prefilled artifact + source placement, target server defaults to the
-    // first enabled non-source server, and the path is suggested from the
-    // server's dataset root + name:version.
+    // first enabled non-source server, and the path is suggested by the
+    // backend API for (artifact, target server).
     expect(
       (screen.getByLabelText("Source placement") as HTMLSelectElement).value,
     ).toBe("pl1");
     await screen.findByDisplayValue("/data/DINOv2:b");
+    expect(vi.mocked(workspaceApi.suggestTargetPath)).toHaveBeenCalledWith("a1", "srv-b");
     await waitFor(() => expect(planSpy).toHaveBeenCalled()); // debounced plan
 
     fireEvent.click(screen.getByRole("button", { name: "Start transfer" }));
@@ -410,6 +438,105 @@ describe("NewTransferDialog", () => {
       screen.getByText("Reason: the source server cannot authenticate to the target server"),
     ).toBeTruthy();
     expect(screen.getByText("direct rsync unavailable; falling back to local relay")).toBeTruthy();
+  });
+
+  it("takes the suggestion from the API response, never from local concatenation", async () => {
+    vi.mocked(workspaceApi.suggestTargetPath).mockResolvedValue({
+      target_path: "/data/dset/MOCKSET--v1",
+      reason: null,
+    });
+    useTransferStore.setState({
+      dialog: { open: true, prefill: { artifactId: "a1" } },
+    });
+
+    render(<NewTransferDialog open />);
+
+    const input = (await screen.findByDisplayValue("/data/dset/MOCKSET--v1")) as HTMLInputElement;
+    expect(input.value).toBe("/data/dset/MOCKSET--v1"); // canonical backend naming
+    expect(vi.mocked(workspaceApi.suggestTargetPath)).toHaveBeenCalledWith("a1", "srv-b");
+  });
+
+  it("keeps a manually typed path when other fields change", async () => {
+    vi.spyOn(transfersApi, "plan").mockResolvedValue(planFixture);
+    useTransferStore.setState({
+      dialog: { open: true, prefill: { artifactId: "a1" } },
+    });
+
+    render(<NewTransferDialog open />);
+    const input = (await screen.findByDisplayValue("/data/DINOv2:b")) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "/my/manual/path" } });
+    expect(input.value).toBe("/my/manual/path");
+
+    // Changing the target server must NOT overwrite the typed path.
+    fireEvent.change(screen.getByLabelText("Target server"), {
+      target: { value: "srv-a" },
+    });
+    expect((screen.getByLabelText("Target path") as HTMLInputElement).value).toBe(
+      "/my/manual/path",
+    );
+  });
+
+  it("re-suggests (new API call) when the artifact changes", async () => {
+    useWorkspaceStore.setState({
+      artifacts: [artifact, artifactB],
+      placements: [placement, placementB],
+    });
+    vi.mocked(workspaceApi.suggestTargetPath)
+      .mockResolvedValueOnce({ target_path: "/data/dset/MOCKSET--v1", reason: null })
+      .mockResolvedValueOnce({ target_path: "/data/dset/Other--v2", reason: null });
+    useTransferStore.setState({
+      dialog: { open: true, prefill: { artifactId: "a1" } },
+    });
+
+    render(<NewTransferDialog open />);
+    await screen.findByDisplayValue("/data/dset/MOCKSET--v1");
+
+    fireEvent.change(screen.getByLabelText("Artifact"), { target: { value: "a2" } });
+
+    await screen.findByDisplayValue("/data/dset/Other--v2");
+    expect(vi.mocked(workspaceApi.suggestTargetPath)).toHaveBeenCalledWith("a2", "srv-b");
+  });
+
+  it("shows the manual-entry hint when the backend reports no configured root", async () => {
+    vi.mocked(workspaceApi.suggestTargetPath).mockResolvedValue({
+      target_path: null,
+      reason: "server_root_not_configured",
+    });
+    useTransferStore.setState({
+      dialog: { open: true, prefill: { artifactId: "a1" } },
+    });
+
+    render(<NewTransferDialog open />);
+    await waitFor(() =>
+      expect(vi.mocked(workspaceApi.suggestTargetPath)).toHaveBeenCalledWith("a1", "srv-b"),
+    );
+
+    const input = screen.getByLabelText("Target path") as HTMLInputElement;
+    expect(input.value).toBe("");
+    expect(
+      await screen.findByText(
+        "No root configured for this kind on that server — enter a target path manually",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("never shows a locally concatenated path while the suggestion is in flight", async () => {
+    vi.mocked(workspaceApi.suggestTargetPath).mockReturnValue(
+      new Promise(() => undefined), // never resolves
+    );
+    useTransferStore.setState({
+      dialog: { open: true, prefill: { artifactId: "a1" } },
+    });
+
+    render(<NewTransferDialog open />);
+    await waitFor(() =>
+      expect(vi.mocked(workspaceApi.suggestTargetPath)).toHaveBeenCalledWith("a1", "srv-b"),
+    );
+
+    // No `root + "/" + label` guess appears before (or without) the response.
+    const input = screen.getByLabelText("Target path") as HTMLInputElement;
+    expect(input.value).toBe("");
+    expect(input.value).not.toContain("/data");
   });
 });
 

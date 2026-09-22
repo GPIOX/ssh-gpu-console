@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { transfersApi } from "../../services/transfersApi";
+import { workspaceApi } from "../../services/workspaceApi";
 import { useConsoleStore } from "../../store/consoleStore";
 import { useTransferStore } from "../../store/transferStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
@@ -142,8 +143,16 @@ function resetStores(): void {
 
 describe("NewTransferDialog field coupling", () => {
   beforeEach(() => {
-    // Plan is an SSH preflight — always mocked so no network happens.
+    // Plan is an SSH preflight — always mocked so no network happens. The
+    // target-path suggestion is also backend-sourced (canonical naming):
+    // mocked per artifact so the dialog never concatenates locally.
     vi.spyOn(transfersApi, "plan").mockResolvedValue(planFixture);
+    vi.spyOn(workspaceApi, "suggestTargetPath").mockImplementation(
+      async (artifactId: string) => ({
+        target_path: artifactId === "art-2" ? "/data/artifact-two" : "/data/artifact-one",
+        reason: null,
+      }),
+    );
   });
 
   afterEach(() => {

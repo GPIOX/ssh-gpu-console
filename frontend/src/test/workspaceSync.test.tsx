@@ -292,30 +292,32 @@ describe("ProjectDetail distribution matrix (Phase 4E)", () => {
 
     render(<ProjectDetail projectId="p1" />);
 
-    expect(await screen.findByLabelText("present")).toBeTruthy();
-    expect(screen.getAllByLabelText("present")).toHaveLength(1);
-    expect(screen.getAllByLabelText("declared")).toHaveLength(1);
-    expect(screen.getAllByLabelText("missing")).toHaveLength(1);
-    expect(screen.getAllByLabelText("unavailable")).toHaveLength(1);
-    expect(screen.getAllByLabelText("syncing")).toHaveLength(1);
+    expect(await screen.findByLabelText(/\/ verified$/)).toBeTruthy();
+    expect(screen.getAllByLabelText(/\/ verified$/)).toHaveLength(1);
+    expect(screen.getAllByLabelText(/\/ declared$/)).toHaveLength(1);
+    expect(screen.getAllByLabelText(/\/ missing$/)).toHaveLength(1);
+    expect(screen.getAllByLabelText(/\/ unavailable$/)).toHaveLength(1);
+    expect(screen.getAllByLabelText(/\/ syncing$/)).toHaveLength(1);
     // No item and no placement: a1/a2/a3 on the disabled srv-off column and
     // a3 on srv-b render the no-declaration dash.
-    expect(screen.getAllByLabelText("undeclared")).toHaveLength(4);
+    expect(screen.getAllByLabelText(/\/ not placed$/)).toHaveLength(4);
 
-    expect(screen.getByLabelText("present").textContent).toBe("✓");
-    expect(screen.getByLabelText("declared").textContent).toBe("○");
-    expect(screen.getByLabelText("missing").textContent).toBe("—");
-    expect(screen.getByLabelText("unavailable").textContent).toBe("!");
-    expect(screen.getByLabelText("syncing").textContent).toBe("↻");
+    expect(screen.getByLabelText(/\/ verified$/).textContent).toContain("✓");
+    expect(screen.getByLabelText(/\/ declared$/).textContent).toContain("○");
+    expect(screen.getByLabelText(/\/ missing$/).textContent).toContain("—");
+    expect(screen.getByLabelText(/\/ unavailable$/).textContent).toContain("!");
+    expect(screen.getByLabelText(/\/ syncing$/).textContent).toContain("↻");
     expect(
-      screen.getAllByLabelText("undeclared").every((node) => node.textContent === "—"),
+      screen
+        .getAllByLabelText(/\/ not placed$/)
+        .every((node) => node.textContent === "—"),
     ).toBe(true);
 
     // Titles carry the remote path (plus checked time / detail when present).
-    expect(screen.getByLabelText("present").getAttribute("title")).toContain("/data/dinov2");
-    expect(screen.getByLabelText("missing").getAttribute("title")).toContain("/models/sam");
-    expect(screen.getByLabelText("unavailable").getAttribute("title")).toContain("ssh failed");
-    expect(screen.getAllByLabelText("undeclared")[0]?.getAttribute("title")).toBeNull();
+    expect(screen.getByLabelText(/\/ verified$/).getAttribute("title")).toContain("/data/dinov2");
+    expect(screen.getByLabelText(/\/ missing$/).getAttribute("title")).toContain("/models/sam");
+    expect(screen.getByLabelText(/\/ unavailable$/).getAttribute("title")).toContain("ssh failed");
+    expect(screen.getAllByLabelText(/\/ not placed$/)[0]?.getAttribute("title")).toBeNull();
   });
 
   it("falls back to declared placements when the snapshot has no item", async () => {
@@ -324,10 +326,10 @@ describe("ProjectDetail distribution matrix (Phase 4E)", () => {
 
     render(<ProjectDetail projectId="p1" />);
 
-    expect(await screen.findByLabelText("declared")).toBeTruthy();
-    expect(screen.getAllByLabelText("declared")).toHaveLength(1); // a1@srv-a via placement
-    expect(screen.getAllByLabelText("undeclared")).toHaveLength(8); // every other cell
-    expect(screen.getByLabelText("declared").getAttribute("title")).toContain("/data/dinov2");
+    expect(await screen.findByLabelText(/\/ declared$/)).toBeTruthy();
+    expect(screen.getAllByLabelText(/\/ declared$/)).toHaveLength(1); // a1@srv-a via placement
+    expect(screen.getAllByLabelText(/\/ not placed$/)).toHaveLength(8); // every other cell
+    expect(screen.getByLabelText(/\/ declared$/).getAttribute("title")).toContain("/data/dinov2");
   });
 
   it("fetches the distribution on mount and never inspects", async () => {
@@ -355,11 +357,11 @@ describe("ProjectDetail distribution matrix (Phase 4E)", () => {
     );
 
     render(<ProjectDetail projectId="p1" />);
-    expect(await screen.findByLabelText("declared")).toBeTruthy();
+    expect(await screen.findByLabelText(/\/ declared$/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Check resources" }));
 
-    expect(await screen.findByLabelText("present")).toBeTruthy();
+    expect(await screen.findByLabelText(/\/ verified$/)).toBeTruthy();
     expect(inspectSpy).toHaveBeenCalledTimes(1);
     expect(distSpy).toHaveBeenCalledTimes(1); // the inspect response replaced the cache
   });

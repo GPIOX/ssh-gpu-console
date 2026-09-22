@@ -384,10 +384,10 @@ describe("ProjectDetail distribution matrix", () => {
     expect(within(matrix).getByText("one4090")).toBeTruthy();
     expect(within(matrix).getByText("DINOv2:b")).toBeTruthy();
     // 4 cells: a1 on srv-a verified per the snapshot; the other three have no
-    // declared placement.
-    expect(await screen.findByLabelText("present")).toBeTruthy();
-    expect(screen.getAllByLabelText("present")).toHaveLength(1);
-    expect(screen.getAllByLabelText("undeclared")).toHaveLength(3);
+    // declared placement. Cell aria-labels read "artifact / server / state".
+    expect(await screen.findByLabelText("DINOv2:b / lab-4090 / verified")).toBeTruthy();
+    expect(screen.getAllByLabelText(/\/ verified$/)).toHaveLength(1);
+    expect(screen.getAllByLabelText(/\/ not placed$/)).toHaveLength(3);
   });
 
   it("lists the project's launch configs as mono program+args with a GPU chip", () => {
@@ -654,6 +654,216 @@ describe("project sync excludes editor", () => {
     await waitFor(() => {
       expect(patchSpy).toHaveBeenCalledWith("p1", { transfer_excludes: [] });
     });
+  });
+});
+
+describe("workspace matrix kind groups + placement hierarchy", () => {
+  // Six artifacts across the three kinds; the long model name exercises the
+  // artifact-cell title/ellipsis. FAKE names only.
+  const artifacts: ArtifactRecord[] = [
+    makeArtifact({ artifact_id: "c1", kind: "code", name: "probe-scaffold", version: null }),
+    makeArtifact({ artifact_id: "c2", kind: "code", name: "eval-harness", version: "r2" }),
+    makeArtifact({ artifact_id: "d1", kind: "dataset", name: "corpus-alpha", version: null }),
+    makeArtifact({ artifact_id: "d2", kind: "dataset", name: "corpus-beta", version: "v9" }),
+    makeArtifact({
+      artifact_id: "m1",
+      kind: "model",
+      name: "mit-b4-prima-full--ablation-feature-router",
+      version: null,
+    }),
+    makeArtifact({ artifact_id: "m2", kind: "model", name: "tiny-seg", version: "v1" }),
+  ];
+
+  const servers: ServerRecord[] = [
+    { server_id: "srv-a", display_name: "lab-4090", ssh_host: "10.0.0.8", username: null, port: 22, tags: [], enabled: true },
+    { server_id: "srv-b", display_name: "one4090", ssh_host: "10.0.0.9", username: null, port: 22, tags: [], enabled: true },
+  ];
+
+  function setupWorkspace(artifactIds: string[], items: DistributionItem[]): void {
+    resetWorkspace();
+    resetConsole();
+    useConsoleStore.setState({ servers, statuses: {} });
+    useWorkspaceStore.setState({
+      projects: [makeProject({ artifact_ids: artifactIds })],
+      artifacts,
+      placements: [],
+      launchConfigs: [],
+    });
+    // Linger from a previous render in this file can only be stale module
+    // state; nothing should persist across tests, but the distributions map
+    // is keyed per project and resetWorkspace() clears it. (Defensive: also
+    // clear via a fresh setState with an explicit distributions key.)
+    useWorkspaceStore.setState({ distributions: {} });
+    vi.spyOn(transfersApi, "listBatches").mockResolvedValue([]);
+    vi.spyOn(workspaceApi, "getProjectDistribution").mockResolvedValue(
+      makeDistribution({ items }),
+    );
+  }
+
+  afterEach(() => {
+    resetWorkspace();
+    resetConsole();
+    vi.restoreAllMocks();
+  });
+
+  it("renders matrix group header rows in code → dataset → model order with counts", async () => {
+    setupWorkspace(["d1", "c1", "m1", "c2", "d2", "m2"], []);
+    render(<ProjectDetail projectId="p1" />);
+    const matrix = await screen.findByRole("table");
+    const headers = within(matrix)
+      .getAllByText(/ · /)
+      .map((node) => node.textContent);
+    expect(headers).toEqual(["code · 2", "dataset · 2", "model · 2"]);
+    // Within-group order follows project artifact_ids (d1 before d2, etc.);
+    // rows are grouped by kind, never re-sorted.
+    const rows = within(matrix).getAllByRole("row");
+    const rowLabels = rows.map((row) => row.textContent ?? "");
+    expect(rowLabels.findIndex((text) => text.includes("probe-scaffold"))).toBeLessThan(
+      rowLabels.findIndex((text) => text.includes("eval-harness")),
+    );
+    expect(rowLabels.findIndex((text) => text.includes("corpus-alpha"))).toBeLessThan(
+      rowLabels.findIndex((text) => text.includes("corpus-beta")),
+    );
+    expect(rowLabels.findIndex((text) => text.includes("mit-b4-prima"))).toBeLessThan(
+      rowLabels.findIndex((text) => text.includes("tiny-seg")),
+    );
+  });
+
+  it("omits the group header for kinds with zero artifacts", async () => {
+    setupWorkspace(["c1", "c2"], []);
+    render(<ProjectDetail projectId="p1" />);
+    const matrix = await screen.findByRole("table");
+    const headers = within(matrix)
+      .getAllByText(/ · /)
+      .map((node) => node.textContent);
+    expect(headers).toEqual(["code · 2"]);
+  });
+
+  it("renders textual states per cell: verified, missing, unavailable, syncing", async () => {
+    setupWorkspace(["c1", "d1", "m1", "m2"], [
+      makeDistributionItem({
+        artifact_id: "c1",
+        server_id: "srv-a",
+        state: "verified",
+      }),
+      makeDistributionItem({
+        artifact_id: "d1",
+        server_id: "srv-a",
+        state: "missing",
+      }),
+      makeDistributionItem({
+        artifact_id: "m1",
+        server_id: "srv-a",
+        state: "unavailable",
+      }),
+      makeDistributionItem({
+        artifact_id: "m2",
+        server_id: "srv-a",
+        state: "syncing",
+      }),
+      // A declared fallback: no item, but a placement exists on srv-b.
+    ]);
+    // Distribution items reference placements; add matching rows so the
+    // snapshot states win the cell rendering (fallback path unchanged).
+    useWorkspaceStore.setState({
+      placements: [
+        makePlacement({ artifact_id: "c1", server_id: "srv-b" }),
+        makePlacement({ placement_id: "pl-d1", artifact_id: "d1", server_id: "srv-a" }),
+        makePlacement({ placement_id: "pl-m1", artifact_id: "m1", server_id: "srv-a" }),
+        makePlacement({ placement_id: "pl-m2", artifact_id: "m2", server_id: "srv-a" }),
+      ],
+    });
+    render(<ProjectDetail projectId="p1" />);
+    await screen.findByRole("table");
+    // verified word
+    expect(
+      screen.getByLabelText("probe-scaffold / lab-4090 / verified"),
+    ).toBeTruthy();
+    // missing word
+    expect(screen.getByLabelText("corpus-alpha / lab-4090 / missing")).toBeTruthy();
+    // unavailable word
+    expect(
+      screen.getByLabelText("mit-b4-prima-full--ablation-feature-router / lab-4090 / unavailable"),
+    ).toBeTruthy();
+    // syncing word
+    expect(screen.getByLabelText("tiny-seg:v1 / lab-4090 / syncing")).toBeTruthy();
+    // declared fallback (placement, no snapshot item)
+    expect(screen.getByLabelText("probe-scaffold / one4090 / declared")).toBeTruthy();
+    // undeclared: no lozenge, bare dash cell only
+    const undeclared = screen.getByLabelText(
+      "corpus-alpha / one4090 / not placed",
+    );
+    expect(undeclared.querySelector(".ws-matrix__state")).toBeNull();
+  });
+
+  it("exposes the full artifact label via title on the artifact cell span", async () => {
+    setupWorkspace(["m1"], []);
+    render(<ProjectDetail projectId="p1" />);
+    await screen.findByRole("table");
+    const span = screen.getByTitle(
+      "mit-b4-prima-full--ablation-feature-router",
+    );
+    expect(span.textContent).toBe("mit-b4-prima-full--ablation-feature-router");
+  });
+
+  it("groups PlacementTable rows by kind sections and one container per artifact", () => {
+    setupWorkspace(["c1", "m1"], []);
+    useWorkspaceStore.setState({
+      placements: [
+        makePlacement({ placement_id: "pl-1", artifact_id: "c1", server_id: "srv-a" }),
+        makePlacement({ placement_id: "pl-2", artifact_id: "c1", server_id: "srv-b" }),
+        makePlacement({ placement_id: "pl-3", artifact_id: "m1", server_id: "srv-a" }),
+      ],
+    });
+    render(
+      <PlacementTable
+        artifacts={artifacts.filter((a) => ["c1", "m1"].includes(a.artifact_id))}
+        placements={useWorkspaceStore.getState().placements}
+        onEdit={() => undefined}
+        onRemove={() => undefined}
+        onSync={() => undefined}
+      />,
+    );
+
+    const sectionHeads = screen
+      .getAllByText(/ · /)
+      .map((node) => node.textContent);
+    expect(sectionHeads).toEqual(["code · 1", "model · 1"]);
+
+    const groups = document.querySelectorAll(".ws-artifact-group");
+    expect(groups).toHaveLength(2);
+    const codeGroup = Array.from(groups).find((group) =>
+      group.textContent?.includes("probe-scaffold"),
+    );
+    expect(codeGroup).toBeDefined();
+    if (codeGroup !== undefined) {
+      const groupScope = within(codeGroup as HTMLElement);
+      expect(groupScope.getByText("lab-4090")).toBeTruthy();
+      expect(groupScope.getByText("one4090")).toBeTruthy();
+      expect(groupScope.getByText("2 placements")).toBeTruthy();
+      // Inspect action and per-row menu still present.
+      expect(groupScope.getAllByRole("button", { name: "Inspect" })).toHaveLength(2);
+      expect(
+        groupScope.getAllByRole("button", { name: /Placement actions: / }),
+      ).toHaveLength(2);
+    }
+    // The kind word lives only in section headers, never in group heads.
+    const codeGroupHead = codeGroup?.querySelector(".ws-artifact-group__head");
+    expect(codeGroupHead?.textContent).not.toContain("code");
+  });
+
+  it("keeps the noPlacements hint inside the artifact group", () => {
+    setupWorkspace(["d1"], []);
+    render(
+      <PlacementTable
+        artifacts={[artifacts.find((a) => a.artifact_id === "d1")!]}
+        placements={[]}
+        onEdit={() => undefined}
+        onRemove={() => undefined}
+      />,
+    );
+    const group = document.querySelector(".ws-artifact-group");
+    expect(group?.textContent).toContain("No placements declared");
   });
 });
 

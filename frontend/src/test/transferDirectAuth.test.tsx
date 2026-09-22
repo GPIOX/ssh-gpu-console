@@ -2,13 +2,16 @@
  * Phase 4.2D: when the transfer plan reports direct rsync unavailable, the
  * plan area gains a humanized reason lead (raw reason stays as secondary
  * mono detail), a 配置直连 button, and the DirectAuthSetupDialog for the
- * current (source → target) pair. All names are synthetic fixtures.
+ * current (source → target) pair. The button is gated on the plan's
+ * DirectAuthReason code: only reasons a dedicated-key setup can fix invite
+ * key setup. All names are synthetic fixtures.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { transfersApi } from "../services/transfersApi";
 import { api } from "../services/api";
+import { workspaceApi } from "../services/workspaceApi";
 import { useConsoleStore } from "../store/consoleStore";
 import { useTransferStore } from "../store/transferStore";
 import { useWorkspaceStore } from "../store/workspaceStore";
@@ -61,6 +64,7 @@ const UNAVAILABLE_PLAN: TransferPlan = {
   strategy_available: { direct_rsync: false, local_relay: true },
   strategy_selected: "local_relay",
   reason: "authentication_failed",
+  direct_auth_reason: "authentication_failed",
   source_exists: true,
   source_size_b: null,
   excludes: [],
@@ -101,6 +105,12 @@ let planSpy: MockInstance<(requestBody: Parameters<typeof transfersApi.plan>[0])
 
 beforeEach(() => {
   planSpy = vi.spyOn(transfersApi, "plan").mockResolvedValue(UNAVAILABLE_PLAN);
+  // Target-path suggestions are backend-sourced; mock so the plan (and the
+  // plan area under test here) is reached at all.
+  vi.spyOn(workspaceApi, "suggestTargetPath").mockResolvedValue({
+    target_path: "/data/synthetic-set",
+    reason: null,
+  });
   vi.spyOn(api, "getDirectAuth").mockResolvedValue({
     server_id: "srv-src",
     pairs: [
@@ -134,7 +144,7 @@ describe("transfer dialog: unavailable direct rsync", () => {
 
     render(<NewTransferDialog open />);
     expect(
-      await screen.findByText("Reason: the source server cannot authenticate to the target server"),
+      await screen.findByText("Reason: authentication failed"),
     ).toBeTruthy();
     expect(screen.getByText("authentication_failed")).toBeTruthy(); // secondary mono detail
     expect(screen.getByRole("button", { name: "Configure direct" })).toBeTruthy();
@@ -149,7 +159,7 @@ describe("transfer dialog: unavailable direct rsync", () => {
     });
 
     render(<NewTransferDialog open />);
-    await screen.findByText("Reason: the source server cannot authenticate to the target server");
+    await screen.findByText("Reason: authentication failed");
     // No metadata GET and no check before the explicit click.
     expect(api.getDirectAuth).not.toHaveBeenCalled();
 
@@ -186,7 +196,7 @@ describe("transfer dialog: unavailable direct rsync", () => {
     });
 
     render(<NewTransferDialog open />);
-    await screen.findByText("Reason: the source server cannot authenticate to the target server");
+    await screen.findByText("Reason: authentication failed");
     const planCallsBefore = planSpy.mock.calls.length;
 
     fireEvent.click(screen.getByRole("button", { name: "Configure direct" }));
@@ -215,7 +225,7 @@ describe("setup dialog pair seeding (pairs shape)", () => {
 
   it("seeds from the exact (source → target) pair when both directions are listed", async () => {
     openSetup();
-    await screen.findByText("Reason: the source server cannot authenticate to the target server");
+    await screen.findByText("Reason: authentication failed");
     // Wrong-direction pair (srv-dst → srv-src) listed first; only the exact
     // (srv-src → srv-dst) pair may seed the row.
     vi.spyOn(api, "getDirectAuth").mockResolvedValue({
@@ -251,7 +261,7 @@ describe("setup dialog pair seeding (pairs shape)", () => {
 
   it("falls back to the target id's listing when the source listing lacks the pair", async () => {
     openSetup();
-    await screen.findByText("Reason: the source server cannot authenticate to the target server");
+    await screen.findByText("Reason: authentication failed");
     vi.spyOn(api, "getDirectAuth")
       .mockResolvedValueOnce({ server_id: "srv-src", pairs: [] })
       .mockResolvedValue({
@@ -274,5 +284,32 @@ describe("setup dialog pair seeding (pairs shape)", () => {
     expect(await screen.findByText("✓ Direct connection verified")).toBeTruthy();
     expect(api.getDirectAuth).toHaveBeenCalledWith("srv-src");
     expect(api.getDirectAuth).toHaveBeenCalledWith("srv-dst");
+  });
+});
+
+describe("transfer dialog: plan reason gates the 配置直连 CTA", () => {
+  function renderPlan(direct_auth_reason: string): void {
+    planSpy.mockResolvedValue({ ...UNAVAILABLE_PLAN, direct_auth_reason });
+    useConsoleStore.setState({ servers, statuses: {} });
+    useWorkspaceStore.setState({
+      artifacts: [artifact],
+      placements: [placement],
+      serverRoots: { "srv-src": roots, "srv-dst": roots },
+    });
+    render(<NewTransferDialog open />);
+  }
+
+  it("rsync_missing_target humanizes the lead and never invites key setup", async () => {
+    renderPlan("rsync_missing_target");
+
+    expect(await screen.findByText("Reason: rsync missing on target")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Configure direct" })).toBeNull();
+  });
+
+  it("authentication_failed shows the failure lead AND the setup CTA", async () => {
+    renderPlan("authentication_failed");
+
+    expect(await screen.findByText("Reason: authentication failed")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Configure direct" })).toBeTruthy();
   });
 });

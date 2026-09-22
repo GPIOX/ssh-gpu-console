@@ -25,6 +25,7 @@ from app.models.workspace import (
     ServerRoots,
     ServerRootsUpdate,
 )
+from app.workspace.paths import claim_path, normalize_remote_path, root_for_kind, safe_artifact_leaf
 from app.workspace.repository import WorkspaceRepository, new_id, utc_now
 
 ServerLookup = Callable[[str], bool]  # registry.contains(server_id) -> bool
@@ -233,20 +234,43 @@ class WorkspaceService:
         )
         return self._repo.set_server_roots(server_id, roots)
 
-    def suggest_target_path(self, server_id: str, artifact_id: str) -> str | None:
-        """Best-effort path suggestion from server roots + artifact identity."""
-        artifact = self._repo.get_artifact(artifact_id)
-        roots = self._repo.server_roots(server_id)
-        if roots is None:
-            return None
-        root = {
-            "code": roots.project_root,
-            "dataset": roots.dataset_root,
-            "model": roots.model_root,
-        }.get(artifact.kind)
+    def suggest_target_path(
+        self, server_id: str, artifact_id: str
+    ) -> tuple[str | None, str | None]:
+        """Canonical target-path suggestion: (path, reason).
+
+        Built exactly like Project Sync's automatic suggestion (the same
+        ``safe_artifact_leaf`` + collision escalation helpers), so a manual
+        transfer pre-fills the same filesystem-safe naming a sync plan would
+        use. Deterministic: repeated calls with identical inputs return the
+        identical path.
+
+        - unknown artifact / unknown server: the repo's and service's own
+          NotFoundError surfaces (404 at the route layer);
+        - no roots record for the server, or the kind's root missing/empty:
+          ``(None, "server_root_not_configured")``;
+        - a display name with no usable path characters (sanitize_component's
+          ConflictError): ``(None, "artifact_name_unusable")``;
+        - success: ``(path, None)`` with the base path claimed against the
+          placements of OTHER artifacts on THIS server (``--`` + id-prefix
+          escalation, never a hash).
+        """
+        artifact = self._repo.get_artifact(artifact_id)  # NotFoundError -> 404
+        roots = self.server_roots(server_id)  # unknown server -> NotFoundError
+        root = root_for_kind(roots, artifact.kind) if roots is not None else None
         if not root:
-            return None
-        return _join(root, _artifact_leaf(artifact))
+            return None, "server_root_not_configured"
+        try:
+            leaf = safe_artifact_leaf(artifact.name, artifact.version, artifact.artifact_id)
+            base = normalize_remote_path(f"{root.rstrip('/')}/{leaf}")
+        except ConflictError:
+            return None, "artifact_name_unusable"
+        taken = {
+            normalize_remote_path(placement.remote_path)
+            for placement in self._repo.placements()
+            if placement.server_id == server_id and placement.artifact_id != artifact_id
+        }
+        return claim_path(base, artifact_id, taken), None
 
     def _reject_unknown_artifacts(self, artifact_ids: list[str]) -> None:
         existing = {artifact.artifact_id for artifact in self._repo.artifacts()}
@@ -255,20 +279,5 @@ class WorkspaceService:
             raise ConflictError(f"unknown artifact reference: {missing[0]}")
 
 
-def _artifact_leaf(artifact: ArtifactRecord) -> str:
-    if artifact.version and not artifact.name.endswith(f":{artifact.version}"):
-        return f"{artifact.name}:{artifact.version}"
-    return artifact.name
-
-
-def _join(root: str, leaf: str) -> str:
-    return root.rstrip("/") + "/" + leaf.lstrip("/")
-
-
 def _stamp() -> str:
     return utc_now()
-
-
-def suggest_join(root: str, leaf: str) -> str:
-    """Join a server root with an artifact leaf (path suggestion only)."""
-    return root.rstrip("/") + "/" + leaf.lstrip("/")

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.core.errors import AppError, ConflictError
 from app.core.lifecycle import get_sync_planner
@@ -38,6 +38,7 @@ from app.models.workspace import (
     ProjectRecord,
     ServerRoots,
     ServerRootsUpdate,
+    SuggestTargetPath,
 )
 from app.runtime import get_runtime
 from app.servers.registry import get_default_registry
@@ -218,6 +219,15 @@ def update_artifact(artifact_id: str, request: ArtifactPatch) -> ArtifactRecord:
 @router.delete("/artifacts/{artifact_id}", status_code=204)
 def delete_artifact(artifact_id: str) -> None:
     _service().delete_artifact(artifact_id)
+
+
+@router.get("/artifacts/{artifact_id}/suggest-target-path", response_model=SuggestTargetPath)
+def suggest_target_path(artifact_id: str, server_id: str = Query(...)) -> SuggestTargetPath:
+    # Canonical (Project Sync-identical) target-path suggestion; the unknown
+    # artifact / unknown server NotFoundError propagates to the global AppError
+    # handler (404), matching this file's error convention.
+    path, reason = _service().suggest_target_path(server_id, artifact_id)
+    return SuggestTargetPath(target_path=path, reason=reason)
 
 
 # ---- placements ----------------------------------------------------------------

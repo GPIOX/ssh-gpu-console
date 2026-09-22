@@ -199,6 +199,67 @@ describe("ServerDialog password credential flow", () => {
     expect(await screen.findByText("not set")).toBeTruthy();
   });
 
+  it("shows the SAVE failure prefix when the first save fails", async () => {
+    const setSpy = vi.spyOn(api, "setPassword").mockRejectedValue(new Error("boom"));
+    // Never configured — yet the failed action was a SAVE, so the prefix must
+    // be the save-failure string.
+    vi.spyOn(api, "getServerAuth").mockResolvedValue(authFixture());
+
+    render(<ServerDialog open onClose={() => {}} server={makeServer()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Set password" }));
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "s3cret-pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(setSpy).toHaveBeenCalledWith("srv-auth", "s3cret-pw");
+    });
+    expect(await screen.findByText("Could not save the password: boom")).toBeTruthy();
+    expect(screen.queryByText(/Could not clear the password/)).toBeNull();
+    // The editor stays open with the typed input so the user can retry.
+    expect(screen.getByLabelText("Password")).toBeTruthy();
+  });
+
+  it("shows the SAVE failure prefix when a replace on a configured server fails (regression)", async () => {
+    const setSpy = vi.spyOn(api, "setPassword").mockRejectedValue(new Error("boom"));
+    vi.spyOn(api, "getServerAuth").mockResolvedValue(
+      authFixture({ password_configured: true, password_storage: "system_keyring" }),
+    );
+
+    render(<ServerDialog open onClose={() => {}} server={makeServer()} />);
+
+    expect(await screen.findByText("••••••••")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Replace password" }));
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "fresh-pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(setSpy).toHaveBeenCalledWith("srv-auth", "fresh-pw");
+    });
+    // The prefix tracks the failed ACTION (save), not the still-true
+    // configured flag — before the fix this wrongly read "Could not clear…".
+    expect(await screen.findByText("Could not save the password: boom")).toBeTruthy();
+    expect(screen.queryByText(/Could not clear the password/)).toBeNull();
+  });
+
+  it("shows the CLEAR failure prefix when the clear request fails", async () => {
+    const deleteSpy = vi.spyOn(api, "deletePassword").mockRejectedValue(new Error("boom"));
+    vi.spyOn(api, "getServerAuth").mockResolvedValue(
+      authFixture({ password_configured: true, password_storage: "session_only" }),
+    );
+
+    render(<ServerDialog open onClose={() => {}} server={makeServer()} />);
+
+    expect(await screen.findByText("this session only")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Clear password" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm clear" }));
+
+    await waitFor(() => {
+      expect(deleteSpy).toHaveBeenCalledWith("srv-auth");
+    });
+    expect(await screen.findByText("Could not clear the password: boom")).toBeTruthy();
+    expect(screen.queryByText(/Could not save the password/)).toBeNull();
+  });
+
   it("starts with an empty input again after close + reopen (no lingering secret)", async () => {
     const { rerender } = render(<ServerDialog open onClose={() => {}} server={makeServer()} />);
 
@@ -369,6 +430,135 @@ describe("DirectAuthPairRow banner decision table (configured sgc_key)", () => {
     const chip = screen.getByText("dedicated key");
     expect(chip.className).toContain("chip--crit");
     expect(screen.queryByText("✓ Dedicated key in place")).toBeNull();
+  });
+});
+
+describe("DirectAuthPairRow state ownership (parent refresh sync)", () => {
+  it("same pair: parent peer goes unchecked → configured between renders updates the row", () => {
+    const { rerender } = render(
+      <DirectAuthPairRow {...pairRowProps(peerFixture())} onAction={apiBackedOnAction()} />,
+    );
+    expect(screen.getByText("not configured")).toBeTruthy();
+
+    rerender(
+      <DirectAuthPairRow
+        {...pairRowProps(
+          peerFixture({
+            configured: true,
+            method: "sgc_key",
+            available: true,
+            checked_at: "2026-09-18T00:00:00Z",
+          }),
+        )}
+        onAction={apiBackedOnAction()}
+      />,
+    );
+    expect(screen.getByText("✓ Direct connection verified")).toBeTruthy();
+  });
+
+  it("same pair: parent peer goes available → failed via rerender shows the failed state", () => {
+    const { rerender } = render(
+      <DirectAuthPairRow
+        {...pairRowProps(
+          peerFixture({
+            configured: true,
+            method: "sgc_key",
+            available: true,
+            checked_at: "2026-09-18T00:00:00Z",
+          }),
+        )}
+        onAction={apiBackedOnAction()}
+      />,
+    );
+    expect(screen.getByText("✓ Direct connection verified")).toBeTruthy();
+
+    rerender(
+      <DirectAuthPairRow
+        {...pairRowProps(
+          peerFixture({
+            configured: true,
+            method: "sgc_key",
+            available: false,
+            reason: "authentication_failed",
+            checked_at: "2026-09-18T00:00:00Z",
+          }),
+        )}
+        onAction={apiBackedOnAction()}
+      />,
+    );
+    expect(screen.getByText("✗ Direct check failed")).toBeTruthy();
+    expect(screen.getByText("authentication failed")).toBeTruthy();
+  });
+
+  it("switching sourceId/targetId resets the row to the new pair's peer", () => {
+    const { rerender } = render(
+      <DirectAuthPairRow
+        {...pairRowProps(
+          peerFixture({
+            configured: true,
+            method: "sgc_key",
+            available: true,
+            checked_at: "2026-09-18T00:00:00Z",
+          }),
+        )}
+        onAction={apiBackedOnAction()}
+      />,
+    );
+    expect(screen.getByText("✓ Direct connection verified")).toBeTruthy();
+
+    rerender(
+      <DirectAuthPairRow
+        sourceId="src-2"
+        sourceName="Source Two"
+        targetId="tgt-2"
+        peer={peerFixture({ target_server_id: "tgt-2" })}
+        onAction={apiBackedOnAction()}
+      />,
+    );
+    const row = screen.getByText("Source Two").closest(".da-pair");
+    expect(row?.getAttribute("data-source")).toBe("src-2");
+    expect(row?.getAttribute("data-target")).toBe("tgt-2");
+    expect(screen.getByText("not configured")).toBeTruthy();
+    expect(screen.queryByText("✓ Direct connection verified")).toBeNull();
+  });
+
+  it("while a check is in flight a parent peer change does not clobber the row", async () => {
+    let release!: (peer: DirectAuthPeer) => void;
+    const gate = new Promise<DirectAuthPeer>((resolve) => {
+      release = resolve;
+    });
+    const onAction = vi.fn(() => gate);
+    const { rerender } = render(
+      <DirectAuthPairRow {...pairRowProps(peerFixture())} onAction={onAction} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Check direct" }));
+    expect(await screen.findByText("checking…")).toBeTruthy();
+
+    // A parent refresh for the same pair lands mid-flight — the row keeps
+    // showing the busy label until the action settles.
+    rerender(
+      <DirectAuthPairRow
+        {...pairRowProps(
+          peerFixture({
+            configured: true,
+            method: "sgc_key",
+            available: true,
+            checked_at: "2026-09-18T00:00:00Z",
+          }),
+        )}
+        onAction={onAction}
+      />,
+    );
+    expect(screen.getByText("checking…")).toBeTruthy();
+    expect(screen.queryByText("✓ Direct connection verified")).toBeNull();
+
+    release(
+      peerFixture({ method: "native", available: true, checked_at: "2026-09-18T00:00:00Z" }),
+    );
+    expect(
+      await screen.findByText("✓ Ready for direct authentication — no setup needed"),
+    ).toBeTruthy();
   });
 });
 

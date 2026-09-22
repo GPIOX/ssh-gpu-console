@@ -14,6 +14,7 @@ import shlex
 from typing import TYPE_CHECKING
 
 from app.collectors.base import ExecutorLike
+from app.direct_auth.reasons import _classify_probe_failure
 from app.models.transfer import DedicatedKeyOptions, TransferJob, TransferPlan, TransferStrategy
 from app.ssh.file_transfer import ServerLike
 
@@ -214,6 +215,10 @@ async def plan_transfer(
     rsync_target = await _rsync_present(target_executor)
     probe_ok = False
     probe_detail = ""
+    # Which probe produced the failure: native (default), dedicated (the SGC
+    # key probe that only runs after a native failure), or transport (an
+    # exception around the probe itself — no stderr to classify).
+    probe_kind = "native"
     direct_method: str | None = None
     if rsync_source and rsync_target:
         try:
@@ -225,6 +230,7 @@ async def plan_transfer(
             if probe_ok:
                 direct_method = "native"
             elif dedicated_key is not None:
+                probe_kind = "dedicated"
                 probe_ok, probe_detail = await dedicated_batch_mode_probe(
                     session, params.host, params.port, params.username, dedicated_key
                 )
@@ -233,13 +239,19 @@ async def plan_transfer(
             await session.close()
         except Exception as exc:  # transport failure -> relay
             probe_ok = False
+            probe_kind = "transport"
             probe_detail = f"preflight probe failed: {str(exc)[:120]}"
 
     direct_available = bool(rsync_source and rsync_target and probe_ok)
     plan.strategy_available = {"direct_rsync": direct_available, "local_relay": True}
     plan.direct_auth_method = direct_method if direct_available else None
     if not direct_available:
-        plan.direct_auth_reason = _unavailable_reason_code(rsync_source, rsync_target)
+        plan.direct_auth_reason = _unavailable_reason_code(
+            rsync_source,
+            rsync_target,
+            probe_detail=probe_detail,
+            probe_kind=probe_kind,
+        )
 
     if requested is TransferStrategy.LOCAL_RELAY:
         plan.strategy_selected = TransferStrategy.LOCAL_RELAY
@@ -272,14 +284,28 @@ async def plan_transfer(
     return plan
 
 
-def _unavailable_reason_code(rsync_source: bool, rsync_target: bool) -> str | None:
-    """Short taxonomy code for the plan preview when direct rsync is off."""
+def _unavailable_reason_code(
+    rsync_source: bool,
+    rsync_target: bool,
+    *,
+    probe_detail: str,
+    probe_kind: str,
+) -> str | None:
+    """Short taxonomy code for the plan preview when direct rsync is off.
+
+    Rsync-missing wins first; otherwise the last failed probe is classified:
+    a transport exception means the source never even reached the target
+    (no stderr to read), any other failure goes through the shared ssh
+    stderr → DirectAuthReason classifier.
+    """
 
     if not rsync_source:
         return "rsync_missing_source"
     if not rsync_target:
         return "rsync_missing_target"
-    return None
+    if probe_kind == "transport":
+        return "route_unreachable"
+    return _classify_probe_failure(probe_detail, dedicated=(probe_kind == "dedicated"))
 
 
 async def _rsync_present(executor: ExecutorLike) -> bool:
