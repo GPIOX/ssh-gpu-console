@@ -68,9 +68,12 @@ script per experiment) is the best source of the exact command line.
   paths or `~`-based; stored verbatim, never shell-expanded.
 - Attach artifacts to the **project** (PATCH `artifact_ids`).
 - **Server roots** on BOTH the source and the target server: the target's
-  roots decide the sync target-path prefill (`<root>/<name:version>`), per
-  kind: dataset → `dataset_root`, model → `model_root`, code → `project_root`.
-  Mirror the SOURCE layout on the target (e.g. target `dataset_root` under the
+  roots seed the backend's target-path suggestion (`<root>/<name>` or
+  `<root>/<name>--<version>`), per kind: dataset → `dataset_root`, model →
+  `model_root`, code → `project_root`; the New-Transfer dialog takes the
+  concrete path from the suggest-target-path endpoint (references/api.md),
+  never string-built in the frontend. Mirror the SOURCE layout on the target
+  (e.g. target `dataset_root` under the
   code tree) so selective syncs and whole-tree syncs land at the same place
   instead of duplicating data.
 - **Transfer excludes** on the PROJECT (`transfer_excludes`, editable via the
@@ -125,10 +128,12 @@ first caution below.
 - **Model run dirs** (`log_*`-style) usually bundle tensorboard + training
   logs + `weights/`. Registering the whole run dir as one model artifact is
   fine for archiving; name the placement at the run dir, not at loose files.
-- **Versions appear in prefill.** Target paths prefill as
-  `<root>/<name:version>` — a version like `ablation-variant1` yields a colon
-  in the suggested directory name. Datasets (no version) prefill clean; for
-  model runs the user may want to edit the target path before confirming.
+- **Versions appear in the suggestion.** The backend suggests
+  `<root>/<name>--<version>` (double dash — a safe directory name, no colon),
+  and escalates a deterministic suffix (`--<artifact-id prefix>`) when another
+  artifact's placement already occupies that path on the SAME server.
+  Datasets (no version) suggest clean; for model runs the user may still edit
+  the target path before confirming.
 - **Validation gotchas.** `program`/`working_dir` reject shell metacharacters
   (`; & | $ ( ) { }` etc. — see `app/models/workspace.py`); remote paths are
   ≤512 chars; args ≤64 tokens; exclude patterns ≤32 single-line entries

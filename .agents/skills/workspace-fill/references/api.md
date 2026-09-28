@@ -76,9 +76,24 @@ curl -s -X PUT :8420/api/v1/workspace/server-roots/<server_id> -H 'Content-Type:
 
 - Declarations only (≤512 chars each); saving does not create directories
   remotely.
-- Used by the New-Transfer dialog to prefill the target path:
-  `<root of kind>/<name>[:<version>]`. Set them on the TARGET server before
-  syncing.
+- Seed the target-path suggestion (next section). Set them on the TARGET
+  server before syncing.
+
+## Target-path suggestion
+
+```bash
+curl -s ":8420/api/v1/workspace/artifacts/<artifact_id>/suggest-target-path?server_id=<server_id>"
+# → {"target_path": "/home/demo/data/D1--v2", "reason": null}
+```
+
+- Canonical naming: `<root>/<name>`, or `<root>/<name>--<version>` when a
+  version exists (double dash — no colon in directory names).
+- The New-Transfer dialog uses THIS response verbatim, never local
+  concatenation. `reason` values: `server_root_not_configured` (no root of
+  that kind on the server → manual entry), `artifact_name_unusable`,
+  `suggested_path_unavailable` (collision escalation exhausted).
+- Collisions count only placements of OTHER artifacts on the SAME server;
+  they escalate deterministically (`--<artifact_id prefix>`).
 
 ## Launch configs
 
